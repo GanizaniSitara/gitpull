@@ -4,8 +4,15 @@ GitPull - Download and extract a GitHub repo's latest files.
 
 Works around git pull being blocked at proxy level by downloading
 the zip archive directly from GitHub.
+
+Usage:
+    gitpull.py                    # Update existing repo (reads from .git/config)
+    gitpull.py owner/repo         # Clone a new repo into ./repo/
+    gitpull.py github.com/o/r     # Clone from URL path
+    gitpull.py https://github.com/owner/repo  # Clone from full URL
 """
 
+import argparse
 import configparser
 import json
 import os
@@ -16,6 +23,43 @@ import tempfile
 import urllib.request
 import zipfile
 from urllib.error import HTTPError, URLError
+
+
+def parse_repo_arg(arg):
+    """
+    Parse a repository argument into owner/repo.
+
+    Supported formats:
+    - owner/repo
+    - github.com/owner/repo
+    - https://github.com/owner/repo
+    - https://github.com/owner/repo.git
+    """
+    # Strip trailing slashes and .git suffix
+    arg = arg.rstrip('/')
+    if arg.endswith('.git'):
+        arg = arg[:-4]
+
+    # Full URL: https://github.com/owner/repo
+    https_pattern = r'^https?://github\.com/([^/]+)/([^/]+)$'
+    match = re.match(https_pattern, arg)
+    if match:
+        return match.group(1), match.group(2)
+
+    # URL without protocol: github.com/owner/repo
+    domain_pattern = r'^github\.com/([^/]+)/([^/]+)$'
+    match = re.match(domain_pattern, arg)
+    if match:
+        return match.group(1), match.group(2)
+
+    # Simple format: owner/repo
+    simple_pattern = r'^([^/]+)/([^/]+)$'
+    match = re.match(simple_pattern, arg)
+    if match:
+        return match.group(1), match.group(2)
+
+    raise ValueError(f"Could not parse repository: {arg}\n"
+                     f"Expected format: owner/repo, github.com/owner/repo, or https://github.com/owner/repo")
 
 
 def get_remote_url():
@@ -172,39 +216,86 @@ def extract_zip(zip_path, target_dir):
 
 def main():
     """CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description="Download and extract a GitHub repo's latest files.",
+        epilog="Examples:\n"
+               "  gitpull.py                          # Update existing repo\n"
+               "  gitpull.py owner/repo               # Clone into ./repo/\n"
+               "  gitpull.py https://github.com/o/r   # Clone from URL\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        'repo',
+        nargs='?',
+        help='Repository to clone (owner/repo or GitHub URL). '
+             'If omitted, updates the current git repository.'
+    )
+    args = parser.parse_args()
+
     try:
-        # Check for .git directory
-        if not os.path.isdir('.git'):
-            print("Error: Not a git repository (no .git directory found)", file=sys.stderr)
-            print("Run this command from the root of a git repository.", file=sys.stderr)
-            sys.exit(1)
+        if args.repo:
+            # Clone mode: download to a new directory
+            owner, repo = parse_repo_arg(args.repo)
+            print(f"Repository: {owner}/{repo}")
 
-        # Get remote URL
-        print("Reading git config...")
-        remote_url = get_remote_url()
-        print(f"Remote URL: {remote_url}")
+            # Create target directory
+            target_dir = repo
+            if os.path.exists(target_dir):
+                print(f"Error: Directory '{target_dir}' already exists", file=sys.stderr)
+                sys.exit(1)
 
-        # Parse GitHub owner/repo
-        owner, repo = parse_github_url(remote_url)
-        print(f"Repository: {owner}/{repo}")
+            # Get default branch
+            print("Fetching repository info...")
+            branch = get_default_branch(owner, repo)
+            print(f"Default branch: {branch}")
 
-        # Get default branch
-        print("Fetching repository info...")
-        branch = get_default_branch(owner, repo)
-        print(f"Default branch: {branch}")
+            # Download zip
+            zip_path = download_zip(owner, repo, branch)
 
-        # Download zip
-        zip_path = download_zip(owner, repo, branch)
+            try:
+                # Create target directory and extract
+                os.makedirs(target_dir)
+                print(f"Extracting to {target_dir}/...")
+                extract_zip(zip_path, target_dir)
+                print("Done!")
+            finally:
+                if os.path.exists(zip_path):
+                    os.unlink(zip_path)
 
-        try:
-            # Extract files
-            print("Extracting files...")
-            extract_zip(zip_path, '.')
-            print("Done!")
-        finally:
-            # Clean up temp file
-            if os.path.exists(zip_path):
-                os.unlink(zip_path)
+        else:
+            # Update mode: refresh existing repo
+            if not os.path.isdir('.git'):
+                print("Error: Not a git repository (no .git directory found)", file=sys.stderr)
+                print("Run this command from the root of a git repository,", file=sys.stderr)
+                print("or provide a repo to clone: gitpull.py owner/repo", file=sys.stderr)
+                sys.exit(1)
+
+            # Get remote URL
+            print("Reading git config...")
+            remote_url = get_remote_url()
+            print(f"Remote URL: {remote_url}")
+
+            # Parse GitHub owner/repo
+            owner, repo = parse_github_url(remote_url)
+            print(f"Repository: {owner}/{repo}")
+
+            # Get default branch
+            print("Fetching repository info...")
+            branch = get_default_branch(owner, repo)
+            print(f"Default branch: {branch}")
+
+            # Download zip
+            zip_path = download_zip(owner, repo, branch)
+
+            try:
+                # Extract files
+                print("Extracting files...")
+                extract_zip(zip_path, '.')
+                print("Done!")
+            finally:
+                # Clean up temp file
+                if os.path.exists(zip_path):
+                    os.unlink(zip_path)
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
