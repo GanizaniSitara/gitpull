@@ -5,7 +5,10 @@ import os
 import sys
 
 from .core import (
+    GITPULL_FILE,
     parse_repo_arg,
+    read_gitpull_file,
+    write_gitpull_file,
     get_remote_url,
     parse_github_url,
     get_default_branch,
@@ -21,7 +24,11 @@ def main():
         epilog="Examples:\n"
                "  gitpull                             # Update existing repo\n"
                "  gitpull owner/repo                  # Clone into ./repo/\n"
-               "  gitpull https://github.com/o/r     # Clone from URL\n",
+               "  gitpull https://github.com/o/r     # Clone from URL\n"
+               "  gitpull --init owner/repo          # Set repo URL for current dir\n"
+               "\n"
+               "For directories without .git, gitpull stores the repo URL in a\n"
+               ".gitpull file. If neither exists, you'll be prompted to enter one.\n",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
@@ -35,6 +42,11 @@ def main():
         action='store_true',
         help='Show version and exit'
     )
+    parser.add_argument(
+        '--init',
+        metavar='URL',
+        help='Initialize .gitpull with a GitHub repo URL for future updates'
+    )
     args = parser.parse_args()
 
     if args.version:
@@ -43,16 +55,21 @@ def main():
         return
 
     try:
+        if args.init:
+            # Init mode: save repo URL to .gitpull
+            owner, repo = parse_repo_arg(args.init)
+            url = f"https://github.com/{owner}/{repo}"
+            write_gitpull_file(url)
+            print(f"Initialized {GITPULL_FILE} with: {url}")
+            return
+
         if args.repo:
-            # Clone mode: download to a new directory
+            # Clone mode: download to a directory (new or existing)
             owner, repo = parse_repo_arg(args.repo)
             print(f"Repository: {owner}/{repo}")
 
-            # Create target directory
             target_dir = repo
-            if os.path.exists(target_dir):
-                print(f"Error: Directory '{target_dir}' already exists", file=sys.stderr)
-                sys.exit(1)
+            dir_exists = os.path.exists(target_dir)
 
             # Get default branch
             print("Fetching repository info...")
@@ -63,10 +80,19 @@ def main():
             zip_path = download_zip(owner, repo, branch)
 
             try:
-                # Create target directory and extract
-                os.makedirs(target_dir)
-                print(f"Extracting to {target_dir}/...")
+                # Create target directory if it doesn't exist
+                if not dir_exists:
+                    os.makedirs(target_dir)
+                    print(f"Extracting to {target_dir}/...")
+                else:
+                    print(f"Updating existing directory {target_dir}/...")
+
                 extract_zip(zip_path, target_dir)
+
+                # Write .gitpull file for future updates
+                url = f"https://github.com/{owner}/{repo}"
+                write_gitpull_file(url, target_dir)
+                print(f"Created {GITPULL_FILE} for future updates")
                 print("Done!")
             finally:
                 if os.path.exists(zip_path):
@@ -74,16 +100,38 @@ def main():
 
         else:
             # Update mode: refresh existing repo
-            if not os.path.isdir('.git'):
-                print("Error: Not a git repository (no .git directory found)", file=sys.stderr)
-                print("Run this command from the root of a git repository,", file=sys.stderr)
-                print("or provide a repo to clone: gitpull owner/repo", file=sys.stderr)
-                sys.exit(1)
+            remote_url = None
 
-            # Get remote URL
-            print("Reading git config...")
-            remote_url = get_remote_url()
-            print(f"Remote URL: {remote_url}")
+            # Check for .gitpull file first
+            gitpull_url = read_gitpull_file()
+            if gitpull_url:
+                print(f"Found {GITPULL_FILE}: {gitpull_url}")
+                remote_url = gitpull_url
+            elif os.path.isdir('.git'):
+                # Fall back to .git/config
+                print("Reading git config...")
+                remote_url = get_remote_url()
+                print(f"Remote URL: {remote_url}")
+            else:
+                # Neither exists - prompt interactively
+                print("No .git directory or .gitpull file found.")
+                print("Enter the GitHub repository URL to set up for future updates.")
+                print("(e.g., https://github.com/owner/repo or owner/repo)")
+                print()
+                try:
+                    user_input = input("GitHub repo: ").strip()
+                except EOFError:
+                    print("\nAborted.", file=sys.stderr)
+                    sys.exit(1)
+
+                if not user_input:
+                    print("Error: No URL provided", file=sys.stderr)
+                    sys.exit(1)
+
+                owner, repo = parse_repo_arg(user_input)
+                remote_url = f"https://github.com/{owner}/{repo}"
+                write_gitpull_file(remote_url)
+                print(f"Saved to {GITPULL_FILE}")
 
             # Parse GitHub owner/repo
             owner, repo = parse_github_url(remote_url)

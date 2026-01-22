@@ -48,6 +48,26 @@ def parse_repo_arg(arg):
                      f"Expected format: owner/repo, github.com/owner/repo, or https://github.com/owner/repo")
 
 
+GITPULL_FILE = '.gitpull'
+
+
+def read_gitpull_file(directory='.'):
+    """Read the repo URL from a .gitpull file."""
+    gitpull_path = os.path.join(directory, GITPULL_FILE)
+    if not os.path.exists(gitpull_path):
+        return None
+    with open(gitpull_path, 'r') as f:
+        url = f.read().strip()
+    return url if url else None
+
+
+def write_gitpull_file(url, directory='.'):
+    """Write the repo URL to a .gitpull file."""
+    gitpull_path = os.path.join(directory, GITPULL_FILE)
+    with open(gitpull_path, 'w') as f:
+        f.write(url + '\n')
+
+
 def get_remote_url():
     """Parse .git/config for the origin remote URL."""
     git_config_path = os.path.join('.git', 'config')
