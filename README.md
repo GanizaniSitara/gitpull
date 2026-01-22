@@ -5,13 +5,13 @@ Download GitHub repositories via zip archive when `git pull` is blocked at the p
 ## Installation
 
 ```bash
-pip install git+https://github.com/yourusername/gitpull.git
+pip install git+https://github.com/GanizaniSitara/gitpull.git
 ```
 
 Or install from source:
 
 ```bash
-git clone https://github.com/yourusername/gitpull.git
+git clone https://github.com/GanizaniSitara/gitpull.git
 cd gitpull
 pip install .
 ```

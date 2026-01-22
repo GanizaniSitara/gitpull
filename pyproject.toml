@@ -29,8 +29,8 @@ keywords = ["git", "github", "download", "proxy"]
 gitpull = "gitpull.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/gitpull"
-Repository = "https://github.com/yourusername/gitpull"
+Homepage = "https://github.com/GanizaniSitara/gitpull"
+Repository = "https://github.com/GanizaniSitara/gitpull"
 
 [tool.setuptools.packages.find]
 where = ["src"]
