@@ -2,16 +2,45 @@
 
 Download GitHub repositories via zip archive when `git pull` is blocked at the proxy level.
 
+## Installation
+
+```bash
+pip install git+https://github.com/yourusername/gitpull.git
+```
+
+Or install from source:
+
+```bash
+git clone https://github.com/yourusername/gitpull.git
+cd gitpull
+pip install .
+```
+
+For development:
+
+```bash
+pip install -e .
+```
+
 ## Usage
 
 ```bash
 # Update an existing repo (run from repo root)
-python gitpull.py
+gitpull
 
 # Clone a new repo
-python gitpull.py owner/repo
-python gitpull.py github.com/owner/repo
-python gitpull.py https://github.com/owner/repo
+gitpull owner/repo
+gitpull github.com/owner/repo
+gitpull https://github.com/owner/repo
+
+# Show version
+gitpull --version
+```
+
+You can also use it as a library:
+
+```python
+from gitpull import get_default_branch, download_zip, extract_zip
 ```
 
 ## How it works
@@ -22,7 +51,7 @@ python gitpull.py https://github.com/owner/repo
 
 ## Requirements
 
-- Python 3.6+
+- Python 3.8+
 - No external dependencies (uses only standard library)
 
 ## Limitations
