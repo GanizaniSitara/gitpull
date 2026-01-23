@@ -1,5 +1,6 @@
 """Core functions for GitPull."""
 
+import base64
 import configparser
 import json
 import os
@@ -218,3 +219,93 @@ def extract_zip(zip_path, target_dir):
         print(f"Extracted {extracted_count} files")
         if skipped_count:
             print(f"Skipped {skipped_count} .git entries")
+
+
+def get_repo_tree(owner, repo, branch):
+    """Get the full file tree from GitHub API."""
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+
+    request = urllib.request.Request(
+        api_url,
+        headers={'User-Agent': 'gitpull-tool'}
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            return data.get('tree', [])
+    except HTTPError as e:
+        if e.code == 404:
+            raise ValueError(f"Repository or branch not found: {owner}/{repo}@{branch}")
+        raise RuntimeError(f"GitHub API error: {e.code} {e.reason}")
+    except URLError as e:
+        raise RuntimeError(f"Network error: {e.reason}")
+
+
+def get_blob_content(owner, repo, sha):
+    """Get blob content from GitHub API (returns base64 decoded bytes)."""
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/git/blobs/{sha}"
+
+    request = urllib.request.Request(
+        api_url,
+        headers={'User-Agent': 'gitpull-tool'}
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            content = data.get('content', '')
+            encoding = data.get('encoding', 'base64')
+
+            if encoding == 'base64':
+                return base64.b64decode(content)
+            else:
+                return content.encode('utf-8')
+    except HTTPError as e:
+        raise RuntimeError(f"Failed to fetch blob {sha}: {e.code} {e.reason}")
+    except URLError as e:
+        raise RuntimeError(f"Network error: {e.reason}")
+
+
+def download_via_api(owner, repo, branch, target_dir):
+    """
+    Download repository files using GitHub API (fallback method).
+
+    This avoids the zip download and raw.githubusercontent.com by using
+    the Git Trees and Blobs APIs instead.
+    """
+    print(f"Fetching file tree for {branch} branch...")
+    tree = get_repo_tree(owner, repo, branch)
+
+    # Filter to only blobs (files), exclude .git
+    files = [
+        item for item in tree
+        if item['type'] == 'blob'
+        and not item['path'].startswith('.git/')
+        and item['path'] != '.git'
+    ]
+
+    print(f"Found {len(files)} files to download")
+
+    downloaded_count = 0
+    for i, item in enumerate(files, 1):
+        path = item['path']
+        sha = item['sha']
+
+        target_path = os.path.join(target_dir, path)
+
+        # Create parent directories
+        parent_dir = os.path.dirname(target_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+
+        # Download and write file
+        print(f"[{i}/{len(files)}] {path}")
+        content = get_blob_content(owner, repo, sha)
+
+        with open(target_path, 'wb') as f:
+            f.write(content)
+
+        downloaded_count += 1
+
+    print(f"Downloaded {downloaded_count} files")

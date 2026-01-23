@@ -14,6 +14,7 @@ from .core import (
     get_default_branch,
     download_zip,
     extract_zip,
+    download_via_api,
 )
 
 
@@ -47,6 +48,11 @@ def main():
         metavar='URL',
         help='Initialize .gitpull with a GitHub repo URL for future updates'
     )
+    parser.add_argument(
+        '--fallback',
+        action='store_true',
+        help='Use API fallback to download files individually (use if zip download is blocked)'
+    )
     args = parser.parse_args()
 
     if args.version:
@@ -76,27 +82,37 @@ def main():
             branch = get_default_branch(owner, repo)
             print(f"Default branch: {branch}")
 
-            # Download zip
-            zip_path = download_zip(owner, repo, branch)
+            # Create target directory if it doesn't exist
+            if not dir_exists:
+                os.makedirs(target_dir)
+                print(f"Downloading to {target_dir}/...")
+            else:
+                print(f"Updating existing directory {target_dir}/...")
 
-            try:
-                # Create target directory if it doesn't exist
-                if not dir_exists:
-                    os.makedirs(target_dir)
-                    print(f"Extracting to {target_dir}/...")
-                else:
-                    print(f"Updating existing directory {target_dir}/...")
+            if args.fallback:
+                # Use API fallback method
+                download_via_api(owner, repo, branch, target_dir)
+            else:
+                # Try zip download
+                try:
+                    zip_path = download_zip(owner, repo, branch)
+                except RuntimeError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    print("\nTip: If zip download is blocked, try running with --fallback", file=sys.stderr)
+                    print("     This will download files individually via GitHub API.", file=sys.stderr)
+                    sys.exit(1)
 
-                extract_zip(zip_path, target_dir)
+                try:
+                    extract_zip(zip_path, target_dir)
+                finally:
+                    if os.path.exists(zip_path):
+                        os.unlink(zip_path)
 
-                # Write .gitpull file for future updates
-                url = f"https://github.com/{owner}/{repo}"
-                write_gitpull_file(url, target_dir)
-                print(f"Created {GITPULL_FILE} for future updates")
-                print("Done!")
-            finally:
-                if os.path.exists(zip_path):
-                    os.unlink(zip_path)
+            # Write .gitpull file for future updates
+            url = f"https://github.com/{owner}/{repo}"
+            write_gitpull_file(url, target_dir)
+            print(f"Created {GITPULL_FILE} for future updates")
+            print("Done!")
 
         else:
             # Update mode: refresh existing repo
@@ -142,18 +158,29 @@ def main():
             branch = get_default_branch(owner, repo)
             print(f"Default branch: {branch}")
 
-            # Download zip
-            zip_path = download_zip(owner, repo, branch)
+            if args.fallback:
+                # Use API fallback method
+                download_via_api(owner, repo, branch, '.')
+            else:
+                # Try zip download
+                try:
+                    zip_path = download_zip(owner, repo, branch)
+                except RuntimeError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    print("\nTip: If zip download is blocked, try running with --fallback", file=sys.stderr)
+                    print("     This will download files individually via GitHub API.", file=sys.stderr)
+                    sys.exit(1)
 
-            try:
-                # Extract files
-                print("Extracting files...")
-                extract_zip(zip_path, '.')
-                print("Done!")
-            finally:
-                # Clean up temp file
-                if os.path.exists(zip_path):
-                    os.unlink(zip_path)
+                try:
+                    # Extract files
+                    print("Extracting files...")
+                    extract_zip(zip_path, '.')
+                finally:
+                    # Clean up temp file
+                    if os.path.exists(zip_path):
+                        os.unlink(zip_path)
+
+            print("Done!")
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
