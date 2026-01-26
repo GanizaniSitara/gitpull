@@ -50,6 +50,24 @@ def parse_repo_arg(arg):
 
 
 GITPULL_FILE = '.gitpull'
+VERSION_FILE = '.gitpull.version'
+
+
+def read_version_file(directory='.'):
+    """Read the stored commit hash from the version file."""
+    version_path = os.path.join(directory, VERSION_FILE)
+    if not os.path.exists(version_path):
+        return None
+    with open(version_path, 'r') as f:
+        sha = f.read().strip()
+    return sha if sha else None
+
+
+def write_version_file(sha, directory='.'):
+    """Write the commit hash to the version file."""
+    version_path = os.path.join(directory, VERSION_FILE)
+    with open(version_path, 'w') as f:
+        f.write(sha + '\n')
 
 
 def read_gitpull_file(directory='.'):
@@ -132,6 +150,27 @@ def get_default_branch(owner, repo):
     except HTTPError as e:
         if e.code == 404:
             raise ValueError(f"Repository {owner}/{repo} not found (or is private)")
+        raise RuntimeError(f"GitHub API error: {e.code} {e.reason}")
+    except URLError as e:
+        raise RuntimeError(f"Network error: {e.reason}")
+
+
+def get_latest_commit_sha(owner, repo, branch):
+    """Get the latest commit SHA for a branch."""
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}"
+
+    request = urllib.request.Request(
+        api_url,
+        headers={'User-Agent': 'gitpull-tool'}
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            return data['sha']
+    except HTTPError as e:
+        if e.code == 404:
+            raise ValueError(f"Branch {branch} not found in {owner}/{repo}")
         raise RuntimeError(f"GitHub API error: {e.code} {e.reason}")
     except URLError as e:
         raise RuntimeError(f"Network error: {e.reason}")

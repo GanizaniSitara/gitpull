@@ -6,12 +6,16 @@ import sys
 
 from .core import (
     GITPULL_FILE,
+    VERSION_FILE,
     parse_repo_arg,
     read_gitpull_file,
     write_gitpull_file,
+    read_version_file,
+    write_version_file,
     get_remote_url,
     parse_github_url,
     get_default_branch,
+    get_latest_commit_sha,
     download_zip,
     extract_zip,
     download_via_api,
@@ -77,10 +81,28 @@ def main():
             target_dir = repo
             dir_exists = os.path.exists(target_dir)
 
-            # Get default branch
+            # Get default branch and latest commit
             print("Fetching repository info...")
             branch = get_default_branch(owner, repo)
             print(f"Default branch: {branch}")
+
+            new_sha = get_latest_commit_sha(owner, repo, branch)
+            short_new_sha = new_sha[:7]
+
+            # Check for existing version
+            previous_sha = None
+            if dir_exists:
+                previous_sha = read_version_file(target_dir)
+
+            if previous_sha:
+                short_prev_sha = previous_sha[:7]
+                if previous_sha == new_sha:
+                    print(f"Warning: Already at commit {short_new_sha}")
+                    print("No new commits to pull.")
+                    return
+                print(f"Upgrading: {short_prev_sha} -> {short_new_sha}")
+            else:
+                print(f"Commit: {short_new_sha}")
 
             # Create target directory if it doesn't exist
             if not dir_exists:
@@ -108,10 +130,12 @@ def main():
                     if os.path.exists(zip_path):
                         os.unlink(zip_path)
 
-            # Write .gitpull file for future updates
+            # Write .gitpull file and version for future updates
             url = f"https://github.com/{owner}/{repo}"
             write_gitpull_file(url, target_dir)
+            write_version_file(new_sha, target_dir)
             print(f"Created {GITPULL_FILE} for future updates")
+            print(f"Version saved: {short_new_sha}")
             print("Done!")
 
         else:
@@ -153,10 +177,25 @@ def main():
             owner, repo = parse_github_url(remote_url)
             print(f"Repository: {owner}/{repo}")
 
-            # Get default branch
+            # Get default branch and latest commit
             print("Fetching repository info...")
             branch = get_default_branch(owner, repo)
             print(f"Default branch: {branch}")
+
+            new_sha = get_latest_commit_sha(owner, repo, branch)
+            short_new_sha = new_sha[:7]
+
+            # Check for existing version
+            previous_sha = read_version_file()
+            if previous_sha:
+                short_prev_sha = previous_sha[:7]
+                if previous_sha == new_sha:
+                    print(f"Warning: Already at commit {short_new_sha}")
+                    print("No new commits to pull.")
+                    return
+                print(f"Upgrading: {short_prev_sha} -> {short_new_sha}")
+            else:
+                print(f"Commit: {short_new_sha}")
 
             if args.fallback:
                 # Use API fallback method
@@ -180,6 +219,9 @@ def main():
                     if os.path.exists(zip_path):
                         os.unlink(zip_path)
 
+            # Save new version
+            write_version_file(new_sha)
+            print(f"Version saved: {short_new_sha}")
             print("Done!")
 
     except FileNotFoundError as e:
