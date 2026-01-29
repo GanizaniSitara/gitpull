@@ -155,6 +155,39 @@ def get_default_branch(owner, repo):
         raise RuntimeError(f"Network error: {e.reason}")
 
 
+def get_branches(owner, repo):
+    """Get list of branches from GitHub API (handles pagination)."""
+    branches = []
+    page = 1
+    per_page = 100  # Maximum allowed by GitHub
+
+    while True:
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/branches?per_page={per_page}&page={page}"
+
+        request = urllib.request.Request(
+            api_url,
+            headers={'User-Agent': 'gitpull-tool'}
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                if not data:
+                    break
+                branches.extend(branch['name'] for branch in data)
+                if len(data) < per_page:
+                    break
+                page += 1
+        except HTTPError as e:
+            if e.code == 404:
+                raise ValueError(f"Repository {owner}/{repo} not found (or is private)")
+            raise RuntimeError(f"GitHub API error: {e.code} {e.reason}")
+        except URLError as e:
+            raise RuntimeError(f"Network error: {e.reason}")
+
+    return branches
+
+
 def get_latest_commit_sha(owner, repo, branch):
     """Get the latest commit SHA for a branch."""
     api_url = f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}"
