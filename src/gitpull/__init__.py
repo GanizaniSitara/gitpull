@@ -12,6 +12,7 @@ from .core import (
     get_remote_url,
     parse_github_url,
     get_default_branch,
+    get_branches,
     download_zip,
     extract_zip,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "get_remote_url",
     "parse_github_url",
     "get_default_branch",
+    "get_branches",
     "download_zip",
     "extract_zip",
 ]

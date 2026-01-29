@@ -15,11 +15,58 @@ from .core import (
     get_remote_url,
     parse_github_url,
     get_default_branch,
+    get_branches,
     get_latest_commit_sha,
     download_zip,
     extract_zip,
     download_via_api,
 )
+
+
+def select_branch(branches, default_branch=None):
+    """
+    Display a numbered list of branches and let user select one.
+
+    Returns the selected branch name or None if user quits.
+    """
+    # Sort branches with default branch first
+    if default_branch and default_branch in branches:
+        sorted_branches = [default_branch] + [b for b in sorted(branches) if b != default_branch]
+    else:
+        sorted_branches = sorted(branches)
+
+    print("\nAvailable branches:")
+    for i, branch in enumerate(sorted_branches, 1):
+        marker = " (default)" if branch == default_branch else ""
+        print(f"  {i}. {branch}{marker}")
+    print(f"  q. Quit")
+    print()
+
+    while True:
+        try:
+            choice = input("Select branch [1]: ").strip()
+        except EOFError:
+            return None
+
+        # Default to first option (usually default branch)
+        if not choice:
+            return sorted_branches[0]
+
+        # Check for quit
+        if choice.lower() == 'q':
+            return None
+
+        # Try to parse as number
+        try:
+            num = int(choice)
+            if 1 <= num <= len(sorted_branches):
+                return sorted_branches[num - 1]
+            print(f"Please enter a number between 1 and {len(sorted_branches)}, or 'q' to quit.")
+        except ValueError:
+            # Check if user typed a branch name directly
+            if choice in branches:
+                return choice
+            print(f"Invalid input. Enter a number (1-{len(sorted_branches)}), branch name, or 'q' to quit.")
 
 
 def main():
@@ -31,6 +78,8 @@ def main():
                "  gitpull owner/repo                  # Clone into ./repo/\n"
                "  gitpull https://github.com/o/r     # Clone from URL\n"
                "  gitpull --init owner/repo          # Set repo URL for current dir\n"
+               "  gitpull owner/repo -b develop      # Clone specific branch\n"
+               "  gitpull -b ?                       # List branches to select from\n"
                "\n"
                "For directories without .git, gitpull stores the repo URL in a\n"
                ".gitpull file. If neither exists, you'll be prompted to enter one.\n",
@@ -57,6 +106,11 @@ def main():
         action='store_true',
         help='Use API fallback to download files individually (use if zip download is blocked)'
     )
+    parser.add_argument(
+        '-b', '--branch',
+        metavar='BRANCH',
+        help='Specify branch to pull (use "?" to list and select interactively)'
+    )
     args = parser.parse_args()
 
     if args.version:
@@ -81,10 +135,27 @@ def main():
             target_dir = repo
             dir_exists = os.path.exists(target_dir)
 
-            # Get default branch and latest commit
+            # Get default branch
             print("Fetching repository info...")
-            branch = get_default_branch(owner, repo)
-            print(f"Default branch: {branch}")
+            default_branch = get_default_branch(owner, repo)
+
+            # Handle branch selection
+            if args.branch == '?':
+                # Interactive branch selection
+                branches = get_branches(owner, repo)
+                branch = select_branch(branches, default_branch)
+                if branch is None:
+                    print("Aborted.")
+                    return
+                print(f"Selected branch: {branch}")
+            elif args.branch:
+                # Use specified branch
+                branch = args.branch
+                print(f"Using branch: {branch}")
+            else:
+                # Use default branch
+                branch = default_branch
+                print(f"Default branch: {branch}")
 
             new_sha = get_latest_commit_sha(owner, repo, branch)
             short_new_sha = new_sha[:7]
@@ -177,10 +248,27 @@ def main():
             owner, repo = parse_github_url(remote_url)
             print(f"Repository: {owner}/{repo}")
 
-            # Get default branch and latest commit
+            # Get default branch
             print("Fetching repository info...")
-            branch = get_default_branch(owner, repo)
-            print(f"Default branch: {branch}")
+            default_branch = get_default_branch(owner, repo)
+
+            # Handle branch selection
+            if args.branch == '?':
+                # Interactive branch selection
+                branches = get_branches(owner, repo)
+                branch = select_branch(branches, default_branch)
+                if branch is None:
+                    print("Aborted.")
+                    return
+                print(f"Selected branch: {branch}")
+            elif args.branch:
+                # Use specified branch
+                branch = args.branch
+                print(f"Using branch: {branch}")
+            else:
+                # Use default branch
+                branch = default_branch
+                print(f"Default branch: {branch}")
 
             new_sha = get_latest_commit_sha(owner, repo, branch)
             short_new_sha = new_sha[:7]
