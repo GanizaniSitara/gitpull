@@ -20,6 +20,7 @@ from .core import (
     download_zip,
     extract_zip,
     download_via_api,
+    bump_version,
 )
 
 
@@ -80,6 +81,8 @@ def main():
                "  gitpull --init owner/repo          # Set repo URL for current dir\n"
                "  gitpull owner/repo -b develop      # Clone specific branch\n"
                "  gitpull -b ?                       # List branches to select from\n"
+               "  gitpull --bump                     # Bump patch version (1.0.0 -> 1.0.1)\n"
+               "  gitpull --bump minor               # Bump minor version (1.0.1 -> 1.1.0)\n"
                "\n"
                "For directories without .git, gitpull stores the repo URL in a\n"
                ".gitpull file. If neither exists, you'll be prompted to enter one.\n",
@@ -111,11 +114,23 @@ def main():
         metavar='BRANCH',
         help='Specify branch to pull (use "?" to list and select interactively)'
     )
+    parser.add_argument(
+        '--bump',
+        choices=['major', 'minor', 'patch'],
+        nargs='?',
+        const='patch',
+        help='Bump version (default: patch). Use: --bump [major|minor|patch]'
+    )
     args = parser.parse_args()
 
     if args.version:
         from . import __version__
         print(f"gitpull {__version__}")
+        return
+
+    if args.bump:
+        old_ver, new_ver = bump_version(args.bump)
+        print(f"Version bumped: {old_ver} -> {new_ver}")
         return
 
     try:

@@ -5,7 +5,7 @@ Works around git pull being blocked at proxy level by downloading
 the zip archive directly from GitHub.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from .core import (
     parse_repo_arg,
