@@ -79,10 +79,12 @@ def main():
                "  gitpull owner/repo                  # Clone into ./repo/\n"
                "  gitpull https://github.com/o/r     # Clone from URL\n"
                "  gitpull --init owner/repo          # Set repo URL for current dir\n"
-               "  gitpull owner/repo -b develop      # Clone specific branch\n"
-               "  gitpull -b ?                       # List branches to select from\n"
+               "  gitpull owner/repo -b develop      # Clone specific branch (skip selection)\n"
                "  gitpull --bump                     # Bump patch version (1.0.0 -> 1.0.1)\n"
                "  gitpull --bump minor               # Bump minor version (1.0.1 -> 1.1.0)\n"
+               "\n"
+               "If a repository has multiple branches, you'll be prompted to select one.\n"
+               "Use -b BRANCH to skip selection and pull a specific branch directly.\n"
                "\n"
                "For directories without .git, gitpull stores the repo URL in a\n"
                ".gitpull file. If neither exists, you'll be prompted to enter one.\n",
@@ -112,7 +114,7 @@ def main():
     parser.add_argument(
         '-b', '--branch',
         metavar='BRANCH',
-        help='Specify branch to pull (use "?" to list and select interactively)'
+        help='Specify branch to pull directly (skips interactive selection)'
     )
     parser.add_argument(
         '--bump',
@@ -155,22 +157,25 @@ def main():
             default_branch = get_default_branch(owner, repo)
 
             # Handle branch selection
-            if args.branch == '?':
-                # Interactive branch selection
-                branches = get_branches(owner, repo)
-                branch = select_branch(branches, default_branch)
-                if branch is None:
-                    print("Aborted.")
-                    return
-                print(f"Selected branch: {branch}")
-            elif args.branch:
-                # Use specified branch
+            if args.branch and args.branch != '?':
+                # Use explicitly specified branch
                 branch = args.branch
                 print(f"Using branch: {branch}")
             else:
-                # Use default branch
-                branch = default_branch
-                print(f"Default branch: {branch}")
+                # Fetch branches to check if there are multiple
+                branches = get_branches(owner, repo)
+
+                if len(branches) > 1:
+                    # Multiple branches - show selection
+                    branch = select_branch(branches, default_branch)
+                    if branch is None:
+                        print("Aborted.")
+                        return
+                    print(f"Selected branch: {branch}")
+                else:
+                    # Only one branch (or default)
+                    branch = default_branch
+                    print(f"Default branch: {branch}")
 
             new_sha = get_latest_commit_sha(owner, repo, branch)
             short_new_sha = new_sha[:7]
@@ -268,22 +273,25 @@ def main():
             default_branch = get_default_branch(owner, repo)
 
             # Handle branch selection
-            if args.branch == '?':
-                # Interactive branch selection
-                branches = get_branches(owner, repo)
-                branch = select_branch(branches, default_branch)
-                if branch is None:
-                    print("Aborted.")
-                    return
-                print(f"Selected branch: {branch}")
-            elif args.branch:
-                # Use specified branch
+            if args.branch and args.branch != '?':
+                # Use explicitly specified branch
                 branch = args.branch
                 print(f"Using branch: {branch}")
             else:
-                # Use default branch
-                branch = default_branch
-                print(f"Default branch: {branch}")
+                # Fetch branches to check if there are multiple
+                branches = get_branches(owner, repo)
+
+                if len(branches) > 1:
+                    # Multiple branches - show selection
+                    branch = select_branch(branches, default_branch)
+                    if branch is None:
+                        print("Aborted.")
+                        return
+                    print(f"Selected branch: {branch}")
+                else:
+                    # Only one branch (or default)
+                    branch = default_branch
+                    print(f"Default branch: {branch}")
 
             new_sha = get_latest_commit_sha(owner, repo, branch)
             short_new_sha = new_sha[:7]
