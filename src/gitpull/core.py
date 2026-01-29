@@ -12,6 +12,66 @@ import zipfile
 from urllib.error import HTTPError, URLError
 
 
+def get_package_version():
+    """Get the current package version from __init__.py."""
+    init_path = os.path.join(os.path.dirname(__file__), '__init__.py')
+    with open(init_path, 'r') as f:
+        content = f.read()
+    match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
+    if match:
+        return match.group(1)
+    return "0.0.0"
+
+
+def bump_version(bump_type='patch'):
+    """
+    Bump the package version in __init__.py.
+
+    Args:
+        bump_type: 'major', 'minor', or 'patch'
+
+    Returns:
+        tuple: (old_version, new_version)
+    """
+    init_path = os.path.join(os.path.dirname(__file__), '__init__.py')
+
+    with open(init_path, 'r') as f:
+        content = f.read()
+
+    match = re.search(r'^(__version__\s*=\s*["\'])([^"\']+)(["\'])', content, re.MULTILINE)
+    if not match:
+        raise ValueError("Could not find __version__ in __init__.py")
+
+    old_version = match.group(2)
+    parts = old_version.split('.')
+
+    # Ensure we have at least 3 parts
+    while len(parts) < 3:
+        parts.append('0')
+
+    major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
+
+    if bump_type == 'major':
+        major += 1
+        minor = 0
+        patch = 0
+    elif bump_type == 'minor':
+        minor += 1
+        patch = 0
+    else:  # patch
+        patch += 1
+
+    new_version = f"{major}.{minor}.{patch}"
+
+    # Replace in content
+    new_content = content[:match.start(2)] + new_version + content[match.end(2):]
+
+    with open(init_path, 'w') as f:
+        f.write(new_content)
+
+    return old_version, new_version
+
+
 def parse_repo_arg(arg):
     """
     Parse a repository argument into owner/repo.
