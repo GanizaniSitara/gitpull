@@ -21,6 +21,7 @@ from .core import (
     extract_zip,
     download_via_api,
     bump_version,
+    poll_for_changes,
 )
 
 
@@ -70,6 +71,57 @@ def select_branch(branches, default_branch=None):
             print(f"Invalid input. Enter a number (1-{len(sorted_branches)}), branch name, or 'q' to quit.")
 
 
+def _handle_watch(args):
+    """Handle --watch mode: poll for changes and pull when available."""
+    branch = args.watch
+    interval = args.interval
+
+    if interval < 10:
+        print("Error: Polling interval must be at least 10 seconds", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        # Determine repository from current directory
+        remote_url = None
+
+        gitpull_url = read_gitpull_file()
+        if gitpull_url:
+            remote_url = gitpull_url
+        elif os.path.isdir('.git'):
+            remote_url = get_remote_url()
+        elif args.repo:
+            owner, repo = parse_repo_arg(args.repo)
+            remote_url = f"https://github.com/{owner}/{repo}"
+        else:
+            print("Error: No repository found. Run from a repo directory or provide a repo argument.",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        owner, repo = parse_github_url(remote_url)
+
+        # Verify the branch exists
+        print(f"Repository: {owner}/{repo}")
+        print(f"Verifying branch '{branch}'...")
+        latest_sha = get_latest_commit_sha(owner, repo, branch)
+        print(f"Branch '{branch}' found (at {latest_sha[:7]})")
+        print()
+
+        poll_for_changes(owner, repo, branch, '.', interval, use_fallback=args.fallback)
+
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nWatch mode stopped.", file=sys.stderr)
+        sys.exit(0)
+
+
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -82,9 +134,14 @@ def main():
                "  gitpull owner/repo -b develop      # Clone specific branch (skip selection)\n"
                "  gitpull --bump                     # Bump patch version (1.0.0 -> 1.0.1)\n"
                "  gitpull --bump minor               # Bump minor version (1.0.1 -> 1.1.0)\n"
+               "  gitpull -w main                    # Watch main branch, pull on changes\n"
+               "  gitpull -w develop --interval 120  # Watch develop, poll every 2 minutes\n"
                "\n"
                "If a repository has multiple branches, you'll be prompted to select one.\n"
                "Use -b BRANCH to skip selection and pull a specific branch directly.\n"
+               "\n"
+               "Watch mode (-w/--watch) runs in the foreground, polling GitHub for new\n"
+               "commits on the specified branch and automatically pulling updates.\n"
                "\n"
                "For directories without .git, gitpull stores the repo URL in a\n"
                ".gitpull file. If neither exists, you'll be prompted to enter one.\n",
@@ -123,6 +180,18 @@ def main():
         const='patch',
         help='Bump version (default: patch). Use: --bump [major|minor|patch]'
     )
+    parser.add_argument(
+        '-w', '--watch',
+        metavar='BRANCH',
+        help='Run in background, polling for changes on BRANCH and pulling when available'
+    )
+    parser.add_argument(
+        '--interval',
+        type=int,
+        default=60,
+        metavar='SECONDS',
+        help='Polling interval in seconds for --watch mode (default: 60)'
+    )
     args = parser.parse_args()
 
     if args.version:
@@ -134,6 +203,9 @@ def main():
         old_ver, new_ver = bump_version(args.bump)
         print(f"Version bumped: {old_ver} -> {new_ver}")
         return
+
+    if args.watch:
+        return _handle_watch(args)
 
     try:
         if args.init:

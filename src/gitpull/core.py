@@ -2,11 +2,13 @@
 
 import base64
 import configparser
+import datetime
 import json
 import os
 import re
 import shutil
 import tempfile
+import time
 import urllib.request
 import zipfile
 from urllib.error import HTTPError, URLError
@@ -441,3 +443,71 @@ def download_via_api(owner, repo, branch, target_dir):
         downloaded_count += 1
 
     print(f"Downloaded {downloaded_count} files")
+
+
+def poll_for_changes(owner, repo, branch, target_dir, interval, use_fallback=False):
+    """
+    Poll GitHub for changes on a branch and pull updates when available.
+
+    Runs in a loop, checking for new commits every `interval` seconds.
+    When a new commit is detected, downloads and extracts the latest files.
+
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        branch: Branch to watch
+        target_dir: Directory to update
+        interval: Polling interval in seconds
+        use_fallback: Use API fallback instead of zip download
+    """
+    def _timestamp():
+        return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    print(f"[{_timestamp()}] Watching {owner}/{repo} branch '{branch}' for changes")
+    print(f"[{_timestamp()}] Polling every {interval} seconds")
+    print(f"[{_timestamp()}] Target directory: {os.path.abspath(target_dir)}")
+    print(f"[{_timestamp()}] Press Ctrl+C to stop")
+    print()
+
+    consecutive_errors = 0
+    max_consecutive_errors = 10
+
+    while True:
+        try:
+            current_sha = read_version_file(target_dir)
+            latest_sha = get_latest_commit_sha(owner, repo, branch)
+            consecutive_errors = 0  # Reset on success
+
+            if current_sha == latest_sha:
+                short_sha = latest_sha[:7]
+                print(f"[{_timestamp()}] No changes (at {short_sha})")
+            else:
+                short_new = latest_sha[:7]
+                if current_sha:
+                    short_old = current_sha[:7]
+                    print(f"[{_timestamp()}] New commit detected: {short_old} -> {short_new}")
+                else:
+                    print(f"[{_timestamp()}] New commit detected: {short_new}")
+
+                # Download and extract
+                if use_fallback:
+                    download_via_api(owner, repo, branch, target_dir)
+                else:
+                    zip_path = download_zip(owner, repo, branch)
+                    try:
+                        extract_zip(zip_path, target_dir)
+                    finally:
+                        if os.path.exists(zip_path):
+                            os.unlink(zip_path)
+
+                write_version_file(latest_sha, target_dir)
+                print(f"[{_timestamp()}] Updated to {short_new}")
+
+        except (RuntimeError, ValueError) as e:
+            consecutive_errors += 1
+            print(f"[{_timestamp()}] Error checking for changes: {e}", flush=True)
+            if consecutive_errors >= max_consecutive_errors:
+                print(f"[{_timestamp()}] Too many consecutive errors ({max_consecutive_errors}), stopping.")
+                raise
+
+        time.sleep(interval)
