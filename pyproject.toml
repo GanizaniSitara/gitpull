@@ -27,6 +27,7 @@ keywords = ["git", "github", "download", "proxy"]
 
 [project.scripts]
 gitpull = "gitpull.cli:main"
+gitpull-go = "gitpull_go.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/GanizaniSitara/gitpull"
