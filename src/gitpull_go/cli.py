@@ -10,7 +10,6 @@ from .core import (
     download_module,
     get_cache_download_dir,
     parse_module_spec,
-    print_cache_instructions,
 )
 
 
@@ -22,14 +21,10 @@ def main():
                "  gitpull-go                                     # Download all deps from go.mod\n"
                "  gitpull-go github.com/user/repo@v1.2.3         # Download specific module+version\n"
                "  gitpull-go github.com/user/repo                # Download latest version\n"
-               "  gitpull-go --cache-dir                         # Show module cache directory\n"
+               "  gitpull-go --setup                             # Configure Go env (run once)\n"
                "\n"
-               "After running gitpull-go, delete go.sum and set env vars before building:\n"
-               "  del go.sum              (or rm -f go.sum on Linux/Mac)\n"
-               "  go env -w GONOSUMCHECK=*\n"
-               "  go env -w GONOSUMDB=*\n"
-               "  go env -w GOPROXY=file:///%%GOPATH%%/pkg/mod/cache/download,direct\n"
-               "  go build\n"
+               "gitpull-go automatically configures Go to skip checksum verification\n"
+               "after downloading. Just run 'go build' when it's done.\n"
                "\n"
                "Environment variables:\n"
                "  GITHUB_TOKEN / GH_TOKEN    GitHub API token (for rate limits / private repos)\n",
@@ -55,7 +50,7 @@ def main():
         '--setup',
         action='store_true',
         help='Configure Go env to use local cache and skip sum verification '
-             '(runs go env -w, deletes go.sum)'
+             '(runs go env -w, deletes go.sum, clears sumdb cache)'
     )
     args = parser.parse_args()
 
@@ -76,12 +71,12 @@ def main():
         module_path, version = parse_module_spec(args.module)
         try:
             download_module(module_path, version)
-            print_cache_instructions()
+            configure_go_env()
         except Exception as e:
             print(f"[!] Error: {e}", file=sys.stderr)
             sys.exit(1)
     else:
-        # Download all from go.mod
+        # Download all from go.mod (configure_go_env called automatically)
         download_all_from_gomod()
 
 
