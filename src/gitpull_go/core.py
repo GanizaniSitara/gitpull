@@ -319,6 +319,50 @@ def compute_zip_hash(zip_bytes):
     return "h1:" + base64.b64encode(h).decode()
 
 
+def compute_gomod_hash(go_mod_content):
+    """
+    Compute the h1: hash for a go.mod file (for go.sum entries).
+
+    Uses the same dirhash.Hash1 algorithm as compute_zip_hash but
+    for a single file named "go.mod".
+    """
+    file_hash = hashlib.sha256(go_mod_content.encode("utf-8")).hexdigest()
+    line = f"{file_hash}  go.mod\n"
+    h = hashlib.sha256(line.encode("utf-8")).digest()
+    return "h1:" + base64.b64encode(h).decode()
+
+
+def update_go_sum(module_path, version, zip_hash, gomod_hash):
+    """
+    Update go.sum with correct hashes for a cached module.
+
+    Replaces any existing entries for this module@version with hashes
+    computed from our cached zips, so go build can verify them without
+    needing network access.
+    """
+    go_sum_path = os.path.join(os.getcwd(), "go.sum")
+
+    existing_lines = []
+    if os.path.exists(go_sum_path):
+        with open(go_sum_path, "r") as f:
+            existing_lines = f.readlines()
+
+    # Filter out old entries for this module@version
+    prefix_zip = f"{module_path} {version} "
+    prefix_mod = f"{module_path} {version}/go.mod "
+    new_lines = [l for l in existing_lines
+                 if not l.startswith(prefix_zip) and not l.startswith(prefix_mod)]
+
+    # Add entries with hashes from our cached zips
+    new_lines.append(f"{module_path} {version} {zip_hash}\n")
+    new_lines.append(f"{module_path} {version}/go.mod {gomod_hash}\n")
+
+    # go.sum is conventionally sorted
+    new_lines.sort()
+    with open(go_sum_path, "w") as f:
+        f.writelines(new_lines)
+
+
 def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_bytes):
     """
     Place all required files in the Go module download cache.
@@ -328,6 +372,8 @@ def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_byte
         cache/download/{escaped_path}/@v/{version}.mod
         cache/download/{escaped_path}/@v/{version}.zip
         cache/download/{escaped_path}/@v/{version}.ziphash
+
+    Returns the zip h1: hash (reused for go.sum updates).
     """
     cache_dir = get_cache_download_dir()
     escaped = escape_module_path(module_path)
@@ -353,12 +399,13 @@ def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_byte
     print(f"  Written: {zip_path}")
 
     # .ziphash file
+    zip_hash = compute_zip_hash(mod_zip_bytes)
     ziphash_path = os.path.join(version_dir, f"{version}.ziphash")
     with open(ziphash_path, "w") as f:
-        f.write(compute_zip_hash(mod_zip_bytes))
+        f.write(zip_hash)
     print(f"  Written: {ziphash_path}")
 
-    return version_dir
+    return zip_hash
 
 
 def download_module(module_path, version=None):
@@ -414,7 +461,14 @@ def download_module(module_path, version=None):
 
     # Place everything in the cache
     print(f"  Placing in cache...")
-    place_in_cache(module_path, version, info, go_mod, mod_zip)
+    zip_hash = place_in_cache(module_path, version, info, go_mod, mod_zip)
+
+    # Update go.sum with correct hashes so go build works without network
+    go_mod_path = os.path.join(os.getcwd(), "go.mod")
+    if os.path.exists(go_mod_path):
+        gomod_hash = compute_gomod_hash(go_mod)
+        update_go_sum(module_path, version, zip_hash, gomod_hash)
+        print(f"  Updated go.sum")
 
     print(f"  Done: {module_path}@{version}")
     return True
@@ -514,22 +568,14 @@ def download_all_from_gomod():
 
 def clean_sum_state():
     """
-    Remove local sum verification state that causes checksum mismatches.
+    Clear the local sumdb cache to prevent Go from repopulating go.sum
+    with official hashes that won't match our cached zips.
 
-    Go ALWAYS verifies downloaded modules against go.sum if it exists,
-    regardless of GONOSUMCHECK. Our zips come from GitHub archives (not
-    the official module proxy), so hashes will never match. We must:
-    1. Delete go.sum so Go has nothing to verify against
-    2. Clear the local sumdb cache so Go doesn't repopulate go.sum
-       with official hashes
+    Note: go.sum is no longer deleted here. Instead, download_module()
+    surgically updates go.sum entries with hashes computed from our
+    cached zips, so go build can verify them offline.
     """
     import shutil
-
-    # Delete go.sum in current directory
-    go_sum = os.path.join(os.getcwd(), "go.sum")
-    if os.path.exists(go_sum):
-        os.remove(go_sum)
-        print(f"  Deleted {go_sum}")
 
     # Clear the local sumdb cache
     sumdb_dir = os.path.join(get_gomodcache(), "cache", "download", "sumdb")
@@ -542,15 +588,15 @@ def configure_go_env():
     """
     Configure Go environment to use the local module cache and skip sum checks.
 
-    Sets persistent env vars via go env -w, cleans sum verification state,
-    and regenerates go.sum from the local cache.
+    Sets persistent env vars via go env -w and cleans the sumdb cache.
+    go.sum is updated separately by download_module() with correct hashes.
     """
     cache_dir = get_cache_download_dir().replace("\\", "/")
     goproxy = f"file:///{cache_dir},direct"
 
     # GONOSUMCHECK may not be supported in all Go versions; the other
     # settings (GOSUMDB=off, GONOSUMDB=*) are sufficient on their own
-    # as long as we regenerate go.sum from the local cache afterward.
+    # since we update go.sum with correct hashes from our cached zips.
     settings = [
         ("GONOSUMDB", "*"),
         ("GOSUMDB", "off"),
@@ -558,6 +604,7 @@ def configure_go_env():
         ("GONOSUMCHECK", "*"),
     ]
 
+    has_critical_failure = False
     print(f"\nConfiguring Go environment:")
     for key, value in settings:
         result = subprocess.run(
@@ -567,29 +614,19 @@ def configure_go_env():
         if result.returncode == 0:
             print(f"  go env -w {key}={value}")
         else:
-            # GONOSUMCHECK is not critical; GOSUMDB=off is sufficient
-            if key == "GONOSUMCHECK":
+            stderr = result.stderr.strip()
+            if key == "GONOSUMCHECK" and "unknown" in stderr.lower():
                 print(f"  [!] {key} not supported by this Go version (not critical)")
             else:
-                print(f"  [!] Failed to set {key}: {result.stderr.strip()}")
+                print(f"  [!] Failed to set {key}: {stderr}")
+                has_critical_failure = True
 
     clean_sum_state()
 
-    # Regenerate go.sum from the local cache so go build can verify checksums
-    go_mod = os.path.join(os.getcwd(), "go.mod")
-    if os.path.exists(go_mod):
-        print(f"\nRegenerating go.sum...")
-        result = subprocess.run(
-            ["go", "mod", "tidy"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            print(f"  go.sum regenerated successfully")
-        else:
-            print(f"  [!] go mod tidy failed: {result.stderr.strip()}")
-            print(f"  Try running 'go mod tidy' manually")
-
-    print(f"\nReady. Run: go build")
+    if has_critical_failure:
+        print(f"\n[!] Some settings failed. Check errors above.")
+    else:
+        print(f"\nReady. Run: go build")
 
 
 def print_cache_instructions():
