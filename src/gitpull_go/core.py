@@ -508,15 +508,71 @@ def download_all_from_gomod():
     print(f"\n{'='*60}")
     print(f"Results: {success} succeeded, {failed} failed")
 
-    print_cache_instructions()
+    # Automatically configure env and clean sum state
+    configure_go_env()
+
+
+def clean_sum_state():
+    """
+    Remove local sum verification state that causes checksum mismatches.
+
+    Go ALWAYS verifies downloaded modules against go.sum if it exists,
+    regardless of GONOSUMCHECK. Our zips come from GitHub archives (not
+    the official module proxy), so hashes will never match. We must:
+    1. Delete go.sum so Go has nothing to verify against
+    2. Clear the local sumdb cache so Go doesn't repopulate go.sum
+       with official hashes
+    """
+    import shutil
+
+    # Delete go.sum in current directory
+    go_sum = os.path.join(os.getcwd(), "go.sum")
+    if os.path.exists(go_sum):
+        os.remove(go_sum)
+        print(f"  Deleted {go_sum}")
+
+    # Clear the local sumdb cache
+    sumdb_dir = os.path.join(get_gomodcache(), "cache", "download", "sumdb")
+    if os.path.isdir(sumdb_dir):
+        shutil.rmtree(sumdb_dir)
+        print(f"  Cleared sumdb cache: {sumdb_dir}")
+
+
+def configure_go_env():
+    """
+    Configure Go environment to use the local module cache and skip sum checks.
+
+    Sets persistent env vars via go env -w and cleans all sum verification state.
+    """
+    cache_dir = get_cache_download_dir().replace("\\", "/")
+    goproxy = f"file:///{cache_dir},direct"
+
+    settings = {
+        "GONOSUMCHECK": "*",
+        "GONOSUMDB": "*",
+        "GOSUMDB": "off",
+        "GOPROXY": goproxy,
+    }
+
+    print(f"\nConfiguring Go environment:")
+    for key, value in settings.items():
+        result = subprocess.run(
+            ["go", "env", "-w", f"{key}={value}"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"  go env -w {key}={value}")
+        else:
+            print(f"  [!] Failed to set {key}: {result.stderr.strip()}")
+
+    clean_sum_state()
+
+    print(f"\nReady. Run: go build")
 
 
 def print_cache_instructions():
     """Print instructions for using the cached modules."""
     cache_dir = get_cache_download_dir().replace("\\", "/")
     print(f"\nModule cache: {get_cache_download_dir()}")
-    print(f"\nTo build with the cached modules, run:")
-    print(f"  set GONOSUMCHECK=*")
-    print(f"  set GONOSUMDB=*")
-    print(f"  set GOPROXY=file:///{cache_dir},direct")
-    print(f"  go build")
+    print(f"\nTo build, run: gitpull-go --setup && go build")
+    print(f"  (--setup configures Go env and clears stale checksums)")

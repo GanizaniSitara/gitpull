@@ -5,11 +5,11 @@ import sys
 
 from . import __version__
 from .core import (
+    configure_go_env,
     download_all_from_gomod,
     download_module,
     get_cache_download_dir,
     parse_module_spec,
-    print_cache_instructions,
 )
 
 
@@ -21,13 +21,10 @@ def main():
                "  gitpull-go                                     # Download all deps from go.mod\n"
                "  gitpull-go github.com/user/repo@v1.2.3         # Download specific module+version\n"
                "  gitpull-go github.com/user/repo                # Download latest version\n"
-               "  gitpull-go --cache-dir                         # Show module cache directory\n"
+               "  gitpull-go --setup                             # Configure Go env (run once)\n"
                "\n"
-               "After running gitpull-go, set these environment variables before building:\n"
-               "  set GONOSUMCHECK=*\n"
-               "  set GONOSUMDB=*\n"
-               "  set GOPROXY=file:///%%GOPATH%%/pkg/mod/cache/download,direct\n"
-               "  go build\n"
+               "gitpull-go automatically configures Go to skip checksum verification\n"
+               "after downloading. Just run 'go build' when it's done.\n"
                "\n"
                "Environment variables:\n"
                "  GITHUB_TOKEN / GH_TOKEN    GitHub API token (for rate limits / private repos)\n",
@@ -49,6 +46,12 @@ def main():
         action='store_true',
         help='Show module cache directory and exit'
     )
+    parser.add_argument(
+        '--setup',
+        action='store_true',
+        help='Configure Go env to use local cache and skip sum verification '
+             '(runs go env -w, deletes go.sum, clears sumdb cache)'
+    )
     args = parser.parse_args()
 
     if args.version:
@@ -59,17 +62,21 @@ def main():
         print(get_cache_download_dir())
         return
 
+    if args.setup:
+        configure_go_env()
+        return
+
     if args.module:
         # Download a specific module
         module_path, version = parse_module_spec(args.module)
         try:
             download_module(module_path, version)
-            print_cache_instructions()
+            configure_go_env()
         except Exception as e:
             print(f"[!] Error: {e}", file=sys.stderr)
             sys.exit(1)
     else:
-        # Download all from go.mod
+        # Download all from go.mod (configure_go_env called automatically)
         download_all_from_gomod()
 
 
