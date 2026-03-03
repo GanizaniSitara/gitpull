@@ -511,12 +511,55 @@ def download_all_from_gomod():
     print_cache_instructions()
 
 
+def configure_go_env():
+    """
+    Configure Go environment to use the local module cache and skip sum checks.
+
+    Runs go env -w to persist the settings, and deletes go.sum if present.
+    """
+    cache_dir = get_cache_download_dir().replace("\\", "/")
+    goproxy = f"file:///{cache_dir},direct"
+
+    settings = {
+        "GONOSUMCHECK": "*",
+        "GONOSUMDB": "*",
+        "GOPROXY": goproxy,
+    }
+
+    for key, value in settings.items():
+        result = subprocess.run(
+            ["go", "env", "-w", f"{key}={value}"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"  go env -w {key}={value}")
+        else:
+            print(f"  [!] Failed to set {key}: {result.stderr.strip()}")
+
+    # Delete go.sum if it exists in current directory
+    go_sum = os.path.join(os.getcwd(), "go.sum")
+    if os.path.exists(go_sum):
+        os.remove(go_sum)
+        print(f"  Deleted {go_sum}")
+
+    print(f"\nGo environment configured. You can now run: go build")
+
+
 def print_cache_instructions():
     """Print instructions for using the cached modules."""
     cache_dir = get_cache_download_dir().replace("\\", "/")
     print(f"\nModule cache: {get_cache_download_dir()}")
-    print(f"\nTo build with the cached modules, run:")
+    print(f"\nBefore building, delete go.sum to avoid stale checksum mismatches:")
+    print(f"  del go.sum              (Windows)")
+    print(f"  rm -f go.sum            (Linux/Mac)")
+    print(f"\nThen set these environment variables and build:")
     print(f"  set GONOSUMCHECK=*")
     print(f"  set GONOSUMDB=*")
+    print(f"  set GOFLAGS=-mod=mod")
     print(f"  set GOPROXY=file:///{cache_dir},direct")
+    print(f"  go build")
+    print(f"\nOr persist them with go env -w:")
+    print(f"  go env -w GONOSUMCHECK=*")
+    print(f"  go env -w GONOSUMDB=*")
+    print(f"  go env -w GOPROXY=file:///{cache_dir},direct")
     print(f"  go build")

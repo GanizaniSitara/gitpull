@@ -5,6 +5,7 @@ import sys
 
 from . import __version__
 from .core import (
+    configure_go_env,
     download_all_from_gomod,
     download_module,
     get_cache_download_dir,
@@ -23,10 +24,11 @@ def main():
                "  gitpull-go github.com/user/repo                # Download latest version\n"
                "  gitpull-go --cache-dir                         # Show module cache directory\n"
                "\n"
-               "After running gitpull-go, set these environment variables before building:\n"
-               "  set GONOSUMCHECK=*\n"
-               "  set GONOSUMDB=*\n"
-               "  set GOPROXY=file:///%%GOPATH%%/pkg/mod/cache/download,direct\n"
+               "After running gitpull-go, delete go.sum and set env vars before building:\n"
+               "  del go.sum              (or rm -f go.sum on Linux/Mac)\n"
+               "  go env -w GONOSUMCHECK=*\n"
+               "  go env -w GONOSUMDB=*\n"
+               "  go env -w GOPROXY=file:///%%GOPATH%%/pkg/mod/cache/download,direct\n"
                "  go build\n"
                "\n"
                "Environment variables:\n"
@@ -49,6 +51,12 @@ def main():
         action='store_true',
         help='Show module cache directory and exit'
     )
+    parser.add_argument(
+        '--setup',
+        action='store_true',
+        help='Configure Go env to use local cache and skip sum verification '
+             '(runs go env -w, deletes go.sum)'
+    )
     args = parser.parse_args()
 
     if args.version:
@@ -57,6 +65,10 @@ def main():
 
     if args.cache_dir:
         print(get_cache_download_dir())
+        return
+
+    if args.setup:
+        configure_go_env()
         return
 
     if args.module:
