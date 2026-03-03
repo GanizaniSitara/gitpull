@@ -375,6 +375,7 @@ def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_byte
         cache/download/{escaped_path}/@v/{version}.mod
         cache/download/{escaped_path}/@v/{version}.zip
         cache/download/{escaped_path}/@v/{version}.ziphash
+        cache/download/{escaped_path}/@v/list  (appended)
 
     Returns the zip h1: hash (reused for go.sum updates).
     """
@@ -408,6 +409,19 @@ def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_byte
     with open(ziphash_path, "w") as f:
         f.write(zip_hash)
     print(f"  Written: {ziphash_path}")
+
+    # list file - required for GOPROXY file:// to serve @latest queries.
+    # Without this, Go can't discover versions through our local proxy
+    # and falls through to the next proxy (which may serve broken content).
+    list_path = os.path.join(version_dir, "list")
+    existing_versions = set()
+    if os.path.exists(list_path):
+        with open(list_path, "r") as f:
+            existing_versions = set(line.strip() for line in f if line.strip())
+    existing_versions.add(version)
+    with open(list_path, "w") as f:
+        f.write("\n".join(sorted(existing_versions)) + "\n")
+    print(f"  Written: {list_path}")
 
     return zip_hash
 
