@@ -526,12 +526,40 @@ def download_module(module_path, version=None, _visited=None):
     # Update visited with resolved version
     _visited.add(f"{module_path}@{version}")
 
-    # Check if already cached — skip download if so
+    # Check if already cached — skip download but still pin and recurse
     cache_dir = get_cache_download_dir()
     escaped = escape_module_path(module_path)
-    cached_zip = os.path.join(cache_dir, escaped.replace("/", os.sep), "@v", f"{version}.zip")
+    version_dir = os.path.join(cache_dir, escaped.replace("/", os.sep), "@v")
+    cached_zip = os.path.join(version_dir, f"{version}.zip")
     if os.path.exists(cached_zip):
         print(f"  Already cached, skipping download")
+
+        # Still need to pin in go.mod and update go.sum
+        go_mod_path = os.path.join(os.getcwd(), "go.mod")
+        if os.path.exists(go_mod_path):
+            _pin_module_in_gomod(module_path, version)
+
+            cached_mod = os.path.join(version_dir, f"{version}.mod")
+            if os.path.exists(cached_mod):
+                with open(cached_mod, "rb") as f:
+                    go_mod_bytes = f.read()
+                with open(cached_zip, "rb") as f:
+                    zip_bytes = f.read()
+                zip_hash = compute_zip_hash(zip_bytes)
+                gomod_hash = compute_gomod_hash(go_mod_bytes)
+                update_go_sum(module_path, version, zip_hash, gomod_hash)
+
+                # Recurse into transitive deps
+                go_mod_content = go_mod_bytes.decode("utf-8")
+                transitive_deps = _parse_go_mod_string(go_mod_content)
+                if transitive_deps:
+                    github_deps = [(p, v) for p, v in transitive_deps if p.startswith("github.com/")]
+                    for dep_path, dep_version in github_deps:
+                        try:
+                            download_module(dep_path, dep_version, _visited=_visited)
+                        except Exception as e:
+                            print(f"  [!] Failed transitive dep {dep_path}@{dep_version}: {e}")
+
         return True
 
     # Get commit info for .info file
