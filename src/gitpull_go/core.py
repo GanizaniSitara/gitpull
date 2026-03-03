@@ -542,20 +542,24 @@ def configure_go_env():
     """
     Configure Go environment to use the local module cache and skip sum checks.
 
-    Sets persistent env vars via go env -w and cleans all sum verification state.
+    Sets persistent env vars via go env -w, cleans sum verification state,
+    and regenerates go.sum from the local cache.
     """
     cache_dir = get_cache_download_dir().replace("\\", "/")
     goproxy = f"file:///{cache_dir},direct"
 
-    settings = {
-        "GONOSUMCHECK": "*",
-        "GONOSUMDB": "*",
-        "GOSUMDB": "off",
-        "GOPROXY": goproxy,
-    }
+    # GONOSUMCHECK may not be supported in all Go versions; the other
+    # settings (GOSUMDB=off, GONOSUMDB=*) are sufficient on their own
+    # as long as we regenerate go.sum from the local cache afterward.
+    settings = [
+        ("GONOSUMDB", "*"),
+        ("GOSUMDB", "off"),
+        ("GOPROXY", goproxy),
+        ("GONOSUMCHECK", "*"),
+    ]
 
     print(f"\nConfiguring Go environment:")
-    for key, value in settings.items():
+    for key, value in settings:
         result = subprocess.run(
             ["go", "env", "-w", f"{key}={value}"],
             capture_output=True, text=True,
@@ -563,9 +567,27 @@ def configure_go_env():
         if result.returncode == 0:
             print(f"  go env -w {key}={value}")
         else:
-            print(f"  [!] Failed to set {key}: {result.stderr.strip()}")
+            # GONOSUMCHECK is not critical; GOSUMDB=off is sufficient
+            if key == "GONOSUMCHECK":
+                print(f"  [!] {key} not supported by this Go version (not critical)")
+            else:
+                print(f"  [!] Failed to set {key}: {result.stderr.strip()}")
 
     clean_sum_state()
+
+    # Regenerate go.sum from the local cache so go build can verify checksums
+    go_mod = os.path.join(os.getcwd(), "go.mod")
+    if os.path.exists(go_mod):
+        print(f"\nRegenerating go.sum...")
+        result = subprocess.run(
+            ["go", "mod", "tidy"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"  go.sum regenerated successfully")
+        else:
+            print(f"  [!] go mod tidy failed: {result.stderr.strip()}")
+            print(f"  Try running 'go mod tidy' manually")
 
     print(f"\nReady. Run: go build")
 
