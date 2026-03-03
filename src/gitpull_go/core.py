@@ -376,6 +376,7 @@ def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_byte
         cache/download/{escaped_path}/@v/{version}.zip
         cache/download/{escaped_path}/@v/{version}.ziphash
         cache/download/{escaped_path}/@v/list  (appended)
+        cache/download/{escaped_path}/@latest  (version info JSON)
 
     Returns the zip h1: hash (reused for go.sum updates).
     """
@@ -410,9 +411,7 @@ def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_byte
         f.write(zip_hash)
     print(f"  Written: {ziphash_path}")
 
-    # list file - required for GOPROXY file:// to serve @latest queries.
-    # Without this, Go can't discover versions through our local proxy
-    # and falls through to the next proxy (which may serve broken content).
+    # list file - helps GOPROXY file:// serve version queries.
     list_path = os.path.join(version_dir, "list")
     existing_versions = set()
     if os.path.exists(list_path):
@@ -422,6 +421,16 @@ def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_byte
     with open(list_path, "w") as f:
         f.write("\n".join(sorted(existing_versions)) + "\n")
     print(f"  Written: {list_path}")
+
+    # @latest file - Go's file:// proxy queries {module}/@latest FIRST.
+    # If this file doesn't exist, Go falls through to the next proxy
+    # (e.g. Artifactory) which may serve broken content. The @latest
+    # file sits one level above @v/, same format as .info JSON.
+    module_dir = os.path.dirname(version_dir)  # parent of @v/
+    latest_path = os.path.join(module_dir, "@latest")
+    with open(latest_path, "w") as f:
+        json.dump(info_json, f)
+    print(f"  Written: {latest_path}")
 
     return zip_hash
 
