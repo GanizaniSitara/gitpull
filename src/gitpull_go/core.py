@@ -454,8 +454,60 @@ def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_byte
     return zip_hash
 
 
-def download_module(module_path, version=None):
-    """Download a single Go module from GitHub and place it in the cache."""
+def _parse_go_mod_string(go_mod_content):
+    """
+    Parse go.mod content (as a string) and return list of (module_path, version)
+    tuples for all required dependencies.
+    """
+    deps = []
+    in_require_block = False
+
+    for line in go_mod_content.splitlines():
+        line = line.strip()
+
+        if line.startswith("//"):
+            continue
+
+        if line.startswith("require ("):
+            in_require_block = True
+            continue
+
+        if in_require_block and line == ")":
+            in_require_block = False
+            continue
+
+        if line.startswith("require ") and "(" not in line:
+            parts = line.split()
+            if len(parts) >= 3:
+                deps.append((parts[1], parts[2]))
+            continue
+
+        if in_require_block:
+            if "//" in line:
+                line = line[:line.index("//")].strip()
+            parts = line.split()
+            if len(parts) >= 2:
+                deps.append((parts[0], parts[1]))
+
+    return deps
+
+
+def download_module(module_path, version=None, _visited=None):
+    """
+    Download a Go module from GitHub and place it in the cache.
+
+    Recursively downloads all transitive dependencies so that builds
+    work fully offline (no proxy access needed).
+    """
+    # Track visited modules to avoid infinite loops
+    if _visited is None:
+        _visited = set()
+
+    cache_key = f"{module_path}@{version}" if version else module_path
+    if cache_key in _visited:
+        return True
+    _visited.add(cache_key)
+
     print(f"\n{'='*60}")
     print(f"Module: {module_path}")
 
@@ -470,6 +522,17 @@ def download_module(module_path, version=None):
     if not version:
         version = get_latest_version(owner, repo)
     print(f"  Version: {version}")
+
+    # Update visited with resolved version
+    _visited.add(f"{module_path}@{version}")
+
+    # Check if already cached — skip download if so
+    cache_dir = get_cache_download_dir()
+    escaped = escape_module_path(module_path)
+    cached_zip = os.path.join(cache_dir, escaped.replace("/", os.sep), "@v", f"{version}.zip")
+    if os.path.exists(cached_zip):
+        print(f"  Already cached, skipping download")
+        return True
 
     # Get commit info for .info file
     print(f"  Fetching commit info for {version}...")
@@ -525,10 +588,6 @@ def download_module(module_path, version=None):
     zip_hash = place_in_cache(module_path, version, info, go_mod, mod_zip)
 
     # If we're in a Go project, pin the module directly in go.mod.
-    # This is the critical step: go mod tidy resolves @latest for modules
-    # NOT yet in go.mod, which requires a working proxy chain. By adding
-    # the require directive here, go mod tidy only needs to download the
-    # specific version (which our file:// cache serves reliably).
     go_mod_path = os.path.join(os.getcwd(), "go.mod")
     if os.path.exists(go_mod_path):
         _pin_module_in_gomod(module_path, version)
@@ -537,6 +596,19 @@ def download_module(module_path, version=None):
         print(f"  Updated go.sum")
 
     print(f"  Done: {module_path}@{version}")
+
+    # Recursively download transitive dependencies from the module's go.mod
+    transitive_deps = _parse_go_mod_string(go_mod)
+    if transitive_deps:
+        github_deps = [(p, v) for p, v in transitive_deps if p.startswith("github.com/")]
+        if github_deps:
+            print(f"  Found {len(github_deps)} transitive GitHub dependencies")
+            for dep_path, dep_version in github_deps:
+                try:
+                    download_module(dep_path, dep_version, _visited=_visited)
+                except Exception as e:
+                    print(f"  [!] Failed to download transitive dep {dep_path}@{dep_version}: {e}")
+
     return True
 
 
@@ -615,10 +687,11 @@ def download_all_from_gomod():
     success = 0
     failed = 0
     downloaded = []
+    visited = set()  # Shared across all downloads to avoid re-downloading
 
     for path, ver in github_deps:
         try:
-            if download_module(path, ver):
+            if download_module(path, ver, _visited=visited):
                 success += 1
                 downloaded.append(path)
             else:
@@ -627,11 +700,19 @@ def download_all_from_gomod():
             print(f"  [!] Error: {e}")
             failed += 1
 
+    # Collect all downloaded module paths (including transitive deps)
+    all_downloaded = set(downloaded)
+    for key in visited:
+        mod_path = key.rsplit("@", 1)[0] if "@" in key else key
+        if mod_path.startswith("github.com/"):
+            all_downloaded.add(mod_path)
+
     print(f"\n{'='*60}")
-    print(f"Results: {success} succeeded, {failed} failed")
+    print(f"Results: {success} direct deps succeeded, {failed} failed")
+    print(f"  (including transitive deps: {len(visited)} total modules processed)")
 
     # Configure env with knowledge of which modules we cached
-    configure_go_env(downloaded_modules=downloaded)
+    configure_go_env(downloaded_modules=list(all_downloaded))
 
 
 def clean_sum_state():

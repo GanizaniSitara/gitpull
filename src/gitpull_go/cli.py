@@ -67,11 +67,18 @@ def main():
         return
 
     if args.module:
-        # Download a specific module
+        # Download a specific module (and all its transitive deps)
         module_path, version = parse_module_spec(args.module)
         try:
-            download_module(module_path, version)
-            configure_go_env(downloaded_modules=[module_path])
+            visited = set()
+            download_module(module_path, version, _visited=visited)
+            # Collect all downloaded modules (including transitive deps)
+            all_downloaded = set()
+            for key in visited:
+                mod_path = key.rsplit("@", 1)[0] if "@" in key else key
+                if mod_path.startswith("github.com/"):
+                    all_downloaded.add(mod_path)
+            configure_go_env(downloaded_modules=list(all_downloaded))
         except Exception as e:
             print(f"[!] Error: {e}", file=sys.stderr)
             sys.exit(1)
