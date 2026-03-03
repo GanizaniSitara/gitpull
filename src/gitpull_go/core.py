@@ -156,6 +156,39 @@ def get_tag_info(owner, repo, tag):
         return sha, timestamp
 
 
+def is_pseudo_version(version):
+    """
+    Check if a version string is a Go pseudo-version.
+
+    Go pseudo-versions have three forms, all ending with -yyyymmddhhmmss-hash:
+      v0.0.0-20210226163009-20ebb0f2a09e    (no base)
+      v1.0.1-0.20201208171632-d5e53a89a2b4  (pre-release on base)
+      v0.1.1-0.20201208171632-abcdef123456  (next patch)
+    """
+    return bool(re.search(r'-(?:\d+\.)?\d{14}-[0-9a-f]{12}$', version))
+
+
+def extract_pseudo_commit(version):
+    """
+    Extract the 12-char commit hash prefix from a pseudo-version.
+
+    e.g. v0.0.0-20210226163009-20ebb0f2a09e -> 20ebb0f2a09e
+    """
+    m = re.search(r'-(?:\d+\.)?\d{14}-([0-9a-f]{12})$', version)
+    if m:
+        return m.group(1)
+    return None
+
+
+def get_commit_info(owner, repo, commit_sha):
+    """Get commit info by SHA (for pseudo-version .info files)."""
+    commit_url = f"https://api.github.com/repos/{owner}/{repo}/commits/{commit_sha}"
+    commit = github_api_get(commit_url)
+    sha = commit["sha"]
+    timestamp = commit["commit"]["committer"]["date"]
+    return sha, timestamp
+
+
 def escape_module_path(path):
     """
     Escape uppercase letters in module paths for filesystem storage.
@@ -562,21 +595,34 @@ def download_module(module_path, version=None, _visited=None):
 
         return True
 
-    # Get commit info for .info file
-    print(f"  Fetching commit info for {version}...")
-    sha, timestamp = get_tag_info(owner, repo, version)
+    # Handle pseudo-versions (commit-based) vs tagged versions
+    commit_hash = extract_pseudo_commit(version) if is_pseudo_version(version) else None
 
-    # Download the zip from GitHub
-    zip_url = f"https://github.com/{owner}/{repo}/archive/refs/tags/{version}.zip"
-    print(f"  Downloading: {zip_url}")
-    try:
+    if commit_hash:
+        # Pseudo-version: fetch commit info by SHA
+        print(f"  Pseudo-version detected, commit: {commit_hash}")
+        print(f"  Fetching commit info...")
+        sha, timestamp = get_commit_info(owner, repo, commit_hash)
+
+        # Download zip by commit SHA
+        zip_url = f"https://github.com/{owner}/{repo}/archive/{sha}.zip"
+        print(f"  Downloading: {zip_url}")
         github_zip = download_url(zip_url)
-    except HTTPError as e:
-        print(f"  [!] Failed to download zip: {e}")
-        # Try without refs/tags/ in case it's a branch
-        zip_url = f"https://github.com/{owner}/{repo}/archive/{version}.zip"
-        print(f"  Retrying: {zip_url}")
-        github_zip = download_url(zip_url)
+    else:
+        # Tagged version: fetch tag info
+        print(f"  Fetching commit info for {version}...")
+        sha, timestamp = get_tag_info(owner, repo, version)
+
+        # Download zip by tag
+        zip_url = f"https://github.com/{owner}/{repo}/archive/refs/tags/{version}.zip"
+        print(f"  Downloading: {zip_url}")
+        try:
+            github_zip = download_url(zip_url)
+        except HTTPError as e:
+            print(f"  [!] Failed to download zip: {e}")
+            zip_url = f"https://github.com/{owner}/{repo}/archive/{version}.zip"
+            print(f"  Retrying: {zip_url}")
+            github_zip = download_url(zip_url)
 
     print(f"  Downloaded {len(github_zip)} bytes")
 
