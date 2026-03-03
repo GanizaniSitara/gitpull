@@ -71,7 +71,7 @@ def main():
         module_path, version = parse_module_spec(args.module)
         try:
             download_module(module_path, version)
-            configure_go_env()
+            configure_go_env(downloaded_modules=[module_path])
         except Exception as e:
             print(f"[!] Error: {e}", file=sys.stderr)
             sys.exit(1)

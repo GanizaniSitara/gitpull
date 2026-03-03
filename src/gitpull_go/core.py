@@ -319,14 +319,17 @@ def compute_zip_hash(zip_bytes):
     return "h1:" + base64.b64encode(h).decode()
 
 
-def compute_gomod_hash(go_mod_content):
+def compute_gomod_hash(go_mod_bytes):
     """
     Compute the h1: hash for a go.mod file (for go.sum entries).
 
     Uses the same dirhash.Hash1 algorithm as compute_zip_hash but
-    for a single file named "go.mod".
+    for a single file named "go.mod". Accepts bytes to ensure the
+    hash matches exactly what Go reads from disk.
     """
-    file_hash = hashlib.sha256(go_mod_content.encode("utf-8")).hexdigest()
+    if isinstance(go_mod_bytes, str):
+        go_mod_bytes = go_mod_bytes.encode("utf-8")
+    file_hash = hashlib.sha256(go_mod_bytes).hexdigest()
     line = f"{file_hash}  go.mod\n"
     h = hashlib.sha256(line.encode("utf-8")).digest()
     return "h1:" + base64.b64encode(h).decode()
@@ -386,10 +389,11 @@ def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_byte
         json.dump(info_json, f)
     print(f"  Written: {info_path}")
 
-    # .mod file
+    # .mod file (binary mode to prevent Windows \r\n conversion)
+    go_mod_bytes = go_mod_content.encode("utf-8")
     mod_path = os.path.join(version_dir, f"{version}.mod")
-    with open(mod_path, "w") as f:
-        f.write(go_mod_content)
+    with open(mod_path, "wb") as f:
+        f.write(go_mod_bytes)
     print(f"  Written: {mod_path}")
 
     # .zip file
@@ -442,6 +446,21 @@ def download_module(module_path, version=None):
         github_zip = download_url(zip_url)
 
     print(f"  Downloaded {len(github_zip)} bytes")
+
+    # For major version suffixes like /v2, /v3 etc., check whether the
+    # code actually lives in a subdirectory or at the repo root.
+    # Many modules use "major version branch" (code at root, go.mod says
+    # module .../v3) rather than "major version subdirectory" (code in v3/).
+    if subdir and re.match(r'^v\d+$', subdir):
+        src_zip = zipfile.ZipFile(io.BytesIO(github_zip))
+        top_dir = next(iter(set(
+            n.split("/")[0] for n in src_zip.namelist() if n.split("/")[0]
+        )))
+        subdir_prefix = f"{top_dir}/{subdir}/"
+        has_subdir = any(n.startswith(subdir_prefix) for n in src_zip.namelist())
+        if not has_subdir:
+            print(f"  Major version module ({subdir}): code is at repo root")
+            subdir = ""
 
     # Extract go.mod
     go_mod = extract_go_mod(github_zip, subdir)
@@ -548,11 +567,13 @@ def download_all_from_gomod():
 
     success = 0
     failed = 0
+    downloaded = []
 
     for path, ver in github_deps:
         try:
             if download_module(path, ver):
                 success += 1
+                downloaded.append(path)
             else:
                 failed += 1
         except Exception as e:
@@ -562,8 +583,8 @@ def download_all_from_gomod():
     print(f"\n{'='*60}")
     print(f"Results: {success} succeeded, {failed} failed")
 
-    # Automatically configure env and clean sum state
-    configure_go_env()
+    # Configure env with knowledge of which modules we cached
+    configure_go_env(downloaded_modules=downloaded)
 
 
 def clean_sum_state():
@@ -584,49 +605,80 @@ def clean_sum_state():
         print(f"  Cleared sumdb cache: {sumdb_dir}")
 
 
-def configure_go_env():
-    """
-    Configure Go environment to use the local module cache and skip sum checks.
+def _get_go_env(key):
+    """Read a single Go env variable."""
+    result = subprocess.run(["go", "env", key], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else ""
 
-    Sets persistent env vars via go env -w and cleans the sumdb cache.
-    go.sum is updated separately by download_module() with correct hashes.
+
+def _set_go_env(key, value):
+    """Set a Go env variable via go env -w. Returns True on success."""
+    result = subprocess.run(
+        ["go", "env", "-w", f"{key}={value}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print(f"  go env -w {key}={value}")
+        return True
+    else:
+        stderr = result.stderr.strip()
+        if "unknown" in stderr.lower():
+            print(f"  [!] {key} not supported by this Go version")
+        else:
+            print(f"  [!] Failed to set {key}: {stderr}")
+        return False
+
+
+def _append_go_env(key, new_patterns):
+    """Append comma-separated patterns to an existing Go env variable."""
+    existing = _get_go_env(key)
+    existing_set = set(existing.split(",")) if existing else set()
+    to_add = [p for p in new_patterns if p not in existing_set]
+    if not to_add:
+        print(f"  {key} already includes cached module patterns")
+        return True
+    updated = f"{existing},{','.join(to_add)}" if existing else ",".join(to_add)
+    return _set_go_env(key, updated)
+
+
+def configure_go_env(downloaded_modules=None):
+    """
+    Configure Go environment to use the local module cache.
+
+    Non-destructive: prepends local cache to existing GOPROXY and
+    appends cached module patterns to GONOSUMDB/GONOSUMCHECK,
+    preserving any existing corporate proxy or sum DB settings.
     """
     cache_dir = get_cache_download_dir().replace("\\", "/")
-    goproxy = f"file:///{cache_dir},direct"
+    local_proxy = f"file:///{cache_dir}"
 
-    # GONOSUMCHECK may not be supported in all Go versions; the other
-    # settings (GOSUMDB=off, GONOSUMDB=*) are sufficient on their own
-    # since we update go.sum with correct hashes from our cached zips.
-    settings = [
-        ("GONOSUMDB", "*"),
-        ("GOSUMDB", "off"),
-        ("GOPROXY", goproxy),
-        ("GONOSUMCHECK", "*"),
-    ]
-
-    has_critical_failure = False
     print(f"\nConfiguring Go environment:")
-    for key, value in settings:
-        result = subprocess.run(
-            ["go", "env", "-w", f"{key}={value}"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            print(f"  go env -w {key}={value}")
-        else:
-            stderr = result.stderr.strip()
-            if key == "GONOSUMCHECK" and "unknown" in stderr.lower():
-                print(f"  [!] {key} not supported by this Go version (not critical)")
-            else:
-                print(f"  [!] Failed to set {key}: {stderr}")
-                has_critical_failure = True
+
+    # Prepend local cache to GOPROXY (preserve existing proxies)
+    existing_goproxy = _get_go_env("GOPROXY")
+    if local_proxy not in existing_goproxy:
+        goproxy = f"{local_proxy},{existing_goproxy}" if existing_goproxy else f"{local_proxy},direct"
+        _set_go_env("GOPROXY", goproxy)
+    else:
+        print(f"  GOPROXY already includes local cache")
+
+    # Build patterns for modules we cached (e.g. github.com/owner/repo)
+    if downloaded_modules:
+        patterns = set()
+        for mod in downloaded_modules:
+            owner, repo = extract_github_owner_repo(mod)
+            if owner:
+                patterns.add(f"github.com/{owner}/{repo}")
+        patterns = sorted(patterns)
+
+        # Append to GONOSUMDB so Go doesn't check sum DB for our cached modules
+        _append_go_env("GONOSUMDB", patterns)
+
+        # Try GONOSUMCHECK too (not all Go versions support it)
+        _append_go_env("GONOSUMCHECK", patterns)
 
     clean_sum_state()
-
-    if has_critical_failure:
-        print(f"\n[!] Some settings failed. Check errors above.")
-    else:
-        print(f"\nReady. Run: go build")
+    print(f"\nReady. Run: go build")
 
 
 def print_cache_instructions():
