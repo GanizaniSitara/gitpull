@@ -172,12 +172,61 @@ def escape_module_path(path):
     return "".join(result)
 
 
+# Directories that Go's module zip creator always excludes
+_VCS_DIRS = {".git", ".hg", ".svn", ".bzr"}
+
+
+def _should_exclude(rel_path, nested_modules):
+    """
+    Check whether a file should be excluded from the Go module zip.
+
+    Matches Go's module zip exclusion rules from golang.org/x/mod/zip.
+    """
+    parts = rel_path.split("/")
+
+    # Exclude VCS directories (.git, .hg, .svn, .bzr)
+    for part in parts:
+        if part in _VCS_DIRS:
+            return True
+
+    # Exclude vendor/ at module root
+    if parts[0] == "vendor":
+        return True
+
+    # Exclude files inside nested submodules (dirs with their own go.mod)
+    for mod_dir in nested_modules:
+        if rel_path.startswith(mod_dir + "/"):
+            return True
+
+    # Exclude .hg_archival.txt at root
+    if rel_path == ".hg_archival.txt":
+        return True
+
+    return False
+
+
+def _find_nested_modules(src_zip, github_prefix):
+    """Find subdirectories that contain their own go.mod (nested modules)."""
+    nested = set()
+    for name in src_zip.namelist():
+        if not name.startswith(github_prefix):
+            continue
+        rel = name[len(github_prefix):]
+        if "/" in rel and rel.endswith("/go.mod"):
+            # e.g. "sub/pkg/go.mod" -> nested module dir is "sub/pkg"
+            mod_dir = rel.rsplit("/", 1)[0]
+            nested.add(mod_dir)
+    return nested
+
+
 def build_module_zip(github_zip_bytes, module_path, version, subdir=""):
     """
     Repackage a GitHub zip archive into Go module zip format.
 
     GitHub zips have: repo-branch/file.go
     Go module zips need: module@version/file.go
+
+    Applies Go's file exclusion rules: VCS dirs, vendor/, nested modules.
     """
     prefix = f"{module_path}@{version}/"
 
@@ -197,6 +246,9 @@ def build_module_zip(github_zip_bytes, module_path, version, subdir=""):
     if subdir:
         github_prefix += subdir.strip("/") + "/"
 
+    # Find nested modules so we can exclude their files
+    nested_modules = _find_nested_modules(src_zip, github_prefix)
+
     out_buf = io.BytesIO()
     with zipfile.ZipFile(out_buf, "w", zipfile.ZIP_DEFLATED) as out_zip:
         for info in src_zip.infolist():
@@ -209,8 +261,7 @@ def build_module_zip(github_zip_bytes, module_path, version, subdir=""):
             if not rel_path:
                 continue
 
-            # Skip .git files
-            if rel_path.startswith(".git"):
+            if _should_exclude(rel_path, nested_modules):
                 continue
 
             new_name = prefix + rel_path
@@ -242,8 +293,29 @@ def extract_go_mod(github_zip_bytes, subdir=""):
 
 
 def compute_zip_hash(zip_bytes):
-    """Compute the hash Go uses for ziphash files (h1: prefix with SHA-256)."""
-    h = hashlib.sha256(zip_bytes).digest()
+    """
+    Compute the h1: hash Go uses for ziphash files.
+
+    This implements Go's dirhash.Hash1 algorithm:
+    1. Sort all file names in the zip
+    2. For each file: format a line as "<hex_sha256>  <filename>\n"
+    3. SHA-256 the concatenated summary
+    4. Return "h1:" + base64(hash)
+    """
+    zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    names = sorted(zf.namelist())
+
+    summary = io.BytesIO()
+    for name in names:
+        # Skip directories
+        info = zf.getinfo(name)
+        if info.is_dir():
+            continue
+        file_hash = hashlib.sha256(zf.read(name)).hexdigest()
+        line = f"{file_hash}  {name}\n"
+        summary.write(line.encode("utf-8"))
+
+    h = hashlib.sha256(summary.getvalue()).digest()
     return "h1:" + base64.b64encode(h).decode()
 
 
