@@ -335,6 +335,25 @@ def compute_gomod_hash(go_mod_bytes):
     return "h1:" + base64.b64encode(h).decode()
 
 
+def _pin_module_in_gomod(module_path, version):
+    """
+    Add a require directive to go.mod for the given module.
+
+    Uses 'go mod edit' so go mod tidy doesn't need to resolve @latest
+    (which requires a working proxy). With the version pinned, Go only
+    fetches the specific version from our file:// cache.
+    """
+    result = subprocess.run(
+        ["go", "mod", "edit", f"-require={module_path}@{version}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print(f"  Pinned {module_path}@{version} in go.mod")
+    else:
+        # Non-fatal: go mod tidy can still work if the proxy resolves
+        print(f"  [!] Could not pin in go.mod: {result.stderr.strip()}")
+
+
 def update_go_sum(module_path, version, zip_hash, gomod_hash):
     """
     Update go.sum with correct hashes for a cached module.
@@ -505,9 +524,14 @@ def download_module(module_path, version=None):
     print(f"  Placing in cache...")
     zip_hash = place_in_cache(module_path, version, info, go_mod, mod_zip)
 
-    # Update go.sum with correct hashes so go build works without network
+    # If we're in a Go project, pin the module directly in go.mod.
+    # This is the critical step: go mod tidy resolves @latest for modules
+    # NOT yet in go.mod, which requires a working proxy chain. By adding
+    # the require directive here, go mod tidy only needs to download the
+    # specific version (which our file:// cache serves reliably).
     go_mod_path = os.path.join(os.getcwd(), "go.mod")
     if os.path.exists(go_mod_path):
+        _pin_module_in_gomod(module_path, version)
         gomod_hash = compute_gomod_hash(go_mod)
         update_go_sum(module_path, version, zip_hash, gomod_hash)
         print(f"  Updated go.sum")
