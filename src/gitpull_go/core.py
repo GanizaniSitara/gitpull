@@ -745,6 +745,13 @@ def download_all_from_gomod():
         sys.exit(1)
 
     print(f"Reading {go_mod_path}...")
+
+    # Save original go.mod content so we can restore it after downloading.
+    # The deps are already listed in go.mod — we only need to populate the
+    # cache and go.sum, not modify go.mod itself.
+    with open(go_mod_path, "r") as f:
+        original_go_mod = f.read()
+
     deps = parse_go_mod(go_mod_path)
 
     if not deps:
@@ -772,7 +779,7 @@ def download_all_from_gomod():
 
     for path, ver in github_deps:
         try:
-            if download_module(path, ver, _visited=visited):
+            if download_module(path, ver, _visited=visited, _is_direct=False):
                 success += 1
                 downloaded.append(path)
             else:
@@ -780,6 +787,12 @@ def download_all_from_gomod():
         except Exception as e:
             print(f"  [!] Error: {e}")
             failed += 1
+
+    # Restore go.mod to its original state. download_module may have added
+    # transitive deps as direct requires (from prior cached runs or race
+    # conditions). The original go.mod already has the correct direct deps.
+    with open(go_mod_path, "w") as f:
+        f.write(original_go_mod)
 
     # Collect all downloaded module paths (including transitive deps)
     all_downloaded = set(downloaded)
