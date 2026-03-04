@@ -512,7 +512,7 @@ def _parse_go_mod_string(go_mod_content):
         if line.startswith("require ") and "(" not in line:
             parts = line.split()
             if len(parts) >= 3:
-                deps.append((parts[1], parts[2]))
+                deps.append((parts[1].strip('"'), parts[2].strip('"')))
             continue
 
         if in_require_block:
@@ -520,7 +520,7 @@ def _parse_go_mod_string(go_mod_content):
                 line = line[:line.index("//")].strip()
             parts = line.split()
             if len(parts) >= 2:
-                deps.append((parts[0], parts[1]))
+                deps.append((parts[0].strip('"'), parts[1].strip('"')))
 
     return deps
 
