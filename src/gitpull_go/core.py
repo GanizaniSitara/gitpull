@@ -525,12 +525,16 @@ def _parse_go_mod_string(go_mod_content):
     return deps
 
 
-def download_module(module_path, version=None, _visited=None):
+def download_module(module_path, version=None, _visited=None, _is_direct=True):
     """
     Download a Go module from GitHub and place it in the cache.
 
     Recursively downloads all transitive dependencies so that builds
     work fully offline (no proxy access needed).
+
+    _is_direct: True for deps listed in the project's go.mod, False for
+    transitive deps discovered during recursion. Only direct deps get
+    pinned in go.mod (transitive deps just go in the cache + go.sum).
     """
     # Track visited modules to avoid infinite loops
     if _visited is None:
@@ -567,10 +571,11 @@ def download_module(module_path, version=None, _visited=None):
     if os.path.exists(cached_zip):
         print(f"  Already cached, skipping download")
 
-        # Still need to pin in go.mod and update go.sum
+        # Still need to pin in go.mod (direct only) and update go.sum
         go_mod_path = os.path.join(os.getcwd(), "go.mod")
         if os.path.exists(go_mod_path):
-            _pin_module_in_gomod(module_path, version)
+            if _is_direct:
+                _pin_module_in_gomod(module_path, version)
 
             cached_mod = os.path.join(version_dir, f"{version}.mod")
             if os.path.exists(cached_mod):
@@ -589,7 +594,7 @@ def download_module(module_path, version=None, _visited=None):
                     github_deps = [(p, v) for p, v in transitive_deps if p.startswith("github.com/")]
                     for dep_path, dep_version in github_deps:
                         try:
-                            download_module(dep_path, dep_version, _visited=_visited)
+                            download_module(dep_path, dep_version, _visited=_visited, _is_direct=False)
                         except Exception as e:
                             print(f"  [!] Failed transitive dep {dep_path}@{dep_version}: {e}")
 
@@ -661,10 +666,12 @@ def download_module(module_path, version=None, _visited=None):
     print(f"  Placing in cache...")
     zip_hash = place_in_cache(module_path, version, info, go_mod, mod_zip)
 
-    # If we're in a Go project, pin the module directly in go.mod.
+    # If we're in a Go project, pin the module in go.mod (direct deps only)
+    # and update go.sum (all deps).
     go_mod_path = os.path.join(os.getcwd(), "go.mod")
     if os.path.exists(go_mod_path):
-        _pin_module_in_gomod(module_path, version)
+        if _is_direct:
+            _pin_module_in_gomod(module_path, version)
         gomod_hash = compute_gomod_hash(go_mod)
         update_go_sum(module_path, version, zip_hash, gomod_hash)
         print(f"  Updated go.sum")
@@ -679,7 +686,7 @@ def download_module(module_path, version=None, _visited=None):
             print(f"  Found {len(github_deps)} transitive GitHub dependencies")
             for dep_path, dep_version in github_deps:
                 try:
-                    download_module(dep_path, dep_version, _visited=_visited)
+                    download_module(dep_path, dep_version, _visited=_visited, _is_direct=False)
                 except Exception as e:
                     print(f"  [!] Failed to download transitive dep {dep_path}@{dep_version}: {e}")
 
