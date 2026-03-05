@@ -917,7 +917,13 @@ def configure_go_env(downloaded_modules=None):
     preserving any existing corporate proxy or sum DB settings.
     """
     cache_dir = get_cache_download_dir().replace("\\", "/")
-    local_proxy = f"file:///{cache_dir}"
+    # file:// URL format: file:///absolute/path (three slashes for abs paths).
+    # On Unix cache_dir starts with /, so file:// + /path = file:///path.
+    # On Windows cache_dir is C:/..., so file:/// + C:/... = file:///C:/...
+    if cache_dir.startswith("/"):
+        local_proxy = f"file://{cache_dir}"
+    else:
+        local_proxy = f"file:///{cache_dir}"
 
     print(f"\nConfiguring Go environment:")
     _log(f"Cache dir: {cache_dir}")
