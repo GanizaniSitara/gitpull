@@ -12,6 +12,21 @@ import zipfile
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+# Module-level verbose flag, set by CLI
+_verbose = False
+
+
+def set_verbose(enabled):
+    """Enable or disable verbose logging."""
+    global _verbose
+    _verbose = enabled
+
+
+def _log(msg):
+    """Print a verbose/debug message (only when --verbose is set)."""
+    if _verbose:
+        print(f"  [verbose] {msg}")
+
 
 def get_gopath():
     """Get GOPATH, defaulting to ~/go."""
@@ -376,6 +391,7 @@ def _pin_module_in_gomod(module_path, version):
     (which requires a working proxy). With the version pinned, Go only
     fetches the specific version from our file:// cache.
     """
+    _log(f"Running: go mod edit -require={module_path}@{version}")
     result = subprocess.run(
         ["go", "mod", "edit", f"-require={module_path}@{version}"],
         capture_output=True, text=True,
@@ -385,6 +401,7 @@ def _pin_module_in_gomod(module_path, version):
     else:
         # Non-fatal: go mod tidy can still work if the proxy resolves
         print(f"  [!] Could not pin in go.mod: {result.stderr.strip()}")
+        _log(f"go mod edit stderr: {result.stderr}")
 
 
 def update_go_sum(module_path, version, zip_hash, gomod_hash):
@@ -416,6 +433,7 @@ def update_go_sum(module_path, version, zip_hash, gomod_hash):
     new_lines.sort()
     with open(go_sum_path, "w") as f:
         f.writelines(new_lines)
+    _log(f"go.sum: wrote {module_path}@{version} zip_hash={zip_hash[:30]}... gomod_hash={gomod_hash[:30]}...")
 
 
 def place_in_cache(module_path, version, info_json, go_mod_content, mod_zip_bytes):
@@ -570,12 +588,15 @@ def download_module(module_path, version=None, _visited=None, _is_direct=True):
     cached_zip = os.path.join(version_dir, f"{version}.zip")
     if os.path.exists(cached_zip):
         print(f"  Already cached, skipping download")
+        _log(f"Cache hit: {cached_zip}")
 
         # Still need to pin in go.mod (direct only) and update go.sum
         go_mod_path = os.path.join(os.getcwd(), "go.mod")
         if os.path.exists(go_mod_path):
             if _is_direct:
                 _pin_module_in_gomod(module_path, version)
+            else:
+                _log(f"Skipping go.mod pin (transitive dep)")
 
             cached_mod = os.path.join(version_dir, f"{version}.mod")
             if os.path.exists(cached_mod):
@@ -672,6 +693,8 @@ def download_module(module_path, version=None, _visited=None, _is_direct=True):
     if os.path.exists(go_mod_path):
         if _is_direct:
             _pin_module_in_gomod(module_path, version)
+        else:
+            _log(f"Skipping go.mod pin (transitive dep)")
         gomod_hash = compute_gomod_hash(go_mod)
         update_go_sum(module_path, version, zip_hash, gomod_hash)
         print(f"  Updated go.sum")
@@ -791,8 +814,30 @@ def download_all_from_gomod():
     # Restore go.mod to its original state. download_module may have added
     # transitive deps as direct requires (from prior cached runs or race
     # conditions). The original go.mod already has the correct direct deps.
+    with open(go_mod_path, "r") as f:
+        modified_go_mod = f.read()
     with open(go_mod_path, "w") as f:
         f.write(original_go_mod)
+    if modified_go_mod != original_go_mod:
+        _log("go.mod was modified during download — restored to original")
+        if _verbose:
+            # Show what would have been added
+            orig_lines = set(original_go_mod.splitlines())
+            mod_lines = set(modified_go_mod.splitlines())
+            added = mod_lines - orig_lines
+            if added:
+                print(f"  [verbose] go.mod lines that were added and reverted:")
+                for line in sorted(added):
+                    print(f"    + {line}")
+    else:
+        _log("go.mod unchanged during download (good)")
+
+    # Report go.sum stats
+    go_sum_path = os.path.join(os.getcwd(), "go.sum")
+    if os.path.exists(go_sum_path):
+        with open(go_sum_path, "r") as f:
+            sum_lines = [l.strip() for l in f if l.strip()]
+        _log(f"go.sum: {len(sum_lines)} entries total")
 
     # Collect all downloaded module paths (including transitive deps)
     all_downloaded = set(downloaded)
@@ -875,9 +920,12 @@ def configure_go_env(downloaded_modules=None):
     local_proxy = f"file:///{cache_dir}"
 
     print(f"\nConfiguring Go environment:")
+    _log(f"Cache dir: {cache_dir}")
+    _log(f"Local proxy URL: {local_proxy}")
 
     # Prepend local cache to GOPROXY (preserve existing proxies)
     existing_goproxy = _get_go_env("GOPROXY")
+    _log(f"Current GOPROXY: {existing_goproxy}")
     if local_proxy not in existing_goproxy:
         goproxy = f"{local_proxy},{existing_goproxy}" if existing_goproxy else f"{local_proxy},direct"
         _set_go_env("GOPROXY", goproxy)
@@ -902,6 +950,128 @@ def configure_go_env(downloaded_modules=None):
     clean_sum_state()
     print(f"\nReady. Run: go build")
 
+
+
+
+def diagnose():
+    """
+    Inspect current state and report potential issues.
+
+    Checks go.mod, go.sum, cache contents, and Go env for consistency.
+    """
+    print("gitpull-go diagnostics")
+    print("=" * 60)
+
+    # Go environment
+    print("\n[Go Environment]")
+    for key in ("GOPATH", "GOMODCACHE", "GOPROXY", "GONOSUMDB", "GONOSUMCHECK", "GOVERSION"):
+        val = _get_go_env(key) if key != "GOVERSION" else ""
+        if key == "GOVERSION":
+            result = subprocess.run(["go", "version"], capture_output=True, text=True)
+            val = result.stdout.strip() if result.returncode == 0 else "(unknown)"
+        print(f"  {key}: {val}")
+
+    cache_dir = get_cache_download_dir()
+    print(f"\n[Cache Directory]")
+    print(f"  Path: {cache_dir}")
+    print(f"  Exists: {os.path.isdir(cache_dir)}")
+
+    if os.path.isdir(cache_dir):
+        # Count cached modules
+        module_count = 0
+        zip_count = 0
+        for root, dirs, files in os.walk(cache_dir):
+            for f in files:
+                if f.endswith(".zip"):
+                    zip_count += 1
+                if f.endswith(".info"):
+                    module_count += 1
+        print(f"  Cached versions (.info files): {module_count}")
+        print(f"  Cached zips (.zip files): {zip_count}")
+
+    # go.mod analysis
+    go_mod_path = os.path.join(os.getcwd(), "go.mod")
+    print(f"\n[go.mod]")
+    print(f"  Path: {go_mod_path}")
+    print(f"  Exists: {os.path.exists(go_mod_path)}")
+
+    if os.path.exists(go_mod_path):
+        deps = parse_go_mod(go_mod_path)
+        with open(go_mod_path, "r") as f:
+            raw = f.read()
+
+        direct = []
+        indirect = []
+        for path, ver in deps:
+            # Check if it's marked indirect in the raw file
+            if f"{path} {ver} // indirect" in raw:
+                indirect.append((path, ver))
+            else:
+                direct.append((path, ver))
+
+        print(f"  Direct deps: {len(direct)}")
+        print(f"  Indirect deps: {len(indirect)}")
+        print(f"  Total: {len(deps)}")
+
+        github_deps = [(p, v) for p, v in deps if p.startswith("github.com/")]
+        non_github = [(p, v) for p, v in deps if not p.startswith("github.com/")]
+        print(f"  GitHub modules: {len(github_deps)}")
+        print(f"  Non-GitHub modules: {len(non_github)}")
+
+        # Check which deps are cached
+        cached = 0
+        missing = []
+        for path, ver in github_deps:
+            escaped = escape_module_path(path)
+            version_dir = os.path.join(cache_dir, escaped.replace("/", os.sep), "@v")
+            if os.path.exists(os.path.join(version_dir, f"{ver}.zip")):
+                cached += 1
+            else:
+                missing.append(f"{path}@{ver}")
+
+        print(f"  Cached in local cache: {cached}/{len(github_deps)}")
+        if missing:
+            print(f"  Missing from cache:")
+            for m in missing[:10]:
+                print(f"    {m}")
+            if len(missing) > 10:
+                print(f"    ... and {len(missing) - 10} more")
+
+    # go.sum analysis
+    go_sum_path = os.path.join(os.getcwd(), "go.sum")
+    print(f"\n[go.sum]")
+    print(f"  Path: {go_sum_path}")
+    print(f"  Exists: {os.path.exists(go_sum_path)}")
+
+    if os.path.exists(go_sum_path):
+        with open(go_sum_path, "r") as f:
+            sum_lines = [l.strip() for l in f if l.strip()]
+        modules_in_sum = set()
+        for line in sum_lines:
+            parts = line.split()
+            if len(parts) >= 2:
+                modules_in_sum.add(f"{parts[0]}@{parts[1].rstrip('/go.mod')}")
+        print(f"  Entries: {len(sum_lines)}")
+        print(f"  Unique module@version: {len(modules_in_sum)}")
+
+    # GOPROXY resolution check
+    print(f"\n[GOPROXY Resolution]")
+    goproxy = _get_go_env("GOPROXY")
+    if goproxy:
+        proxies = goproxy.split(",")
+        for i, p in enumerate(proxies):
+            p = p.strip()
+            is_local = p.startswith("file://")
+            exists = os.path.isdir(p.replace("file:///", "").replace("file://", "")) if is_local else None
+            status = f"(local, exists={exists})" if is_local else "(remote)" if p not in ("direct", "off") else ""
+            print(f"  [{i+1}] {p} {status}")
+
+    print(f"\n{'='*60}")
+    print("Done. If go build fails, check:")
+    print("  1. Are all deps cached? (see Missing from cache above)")
+    print("  2. Is GOPROXY pointing to local cache first?")
+    print("  3. Are GONOSUMDB/GONOSUMCHECK set for cached modules?")
+    print("  4. Try: git checkout go.mod && gitpull-go")
 
 def print_cache_instructions():
     """Print instructions for using the cached modules."""

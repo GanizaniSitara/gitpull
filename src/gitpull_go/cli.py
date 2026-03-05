@@ -6,10 +6,12 @@ import sys
 from . import __version__
 from .core import (
     configure_go_env,
+    diagnose,
     download_all_from_gomod,
     download_module,
     get_cache_download_dir,
     parse_module_spec,
+    set_verbose,
 )
 
 
@@ -22,6 +24,8 @@ def main():
                "  gitpull-go github.com/user/repo@v1.2.3         # Download specific module+version\n"
                "  gitpull-go github.com/user/repo                # Download latest version\n"
                "  gitpull-go --setup                             # Configure Go env (run once)\n"
+               "  gitpull-go --diagnose                          # Check state for issues\n"
+               "  gitpull-go -v                                  # Verbose output\n"
                "\n"
                "gitpull-go automatically configures Go to skip checksum verification\n"
                "after downloading. Just run 'go build' when it's done.\n"
@@ -52,7 +56,20 @@ def main():
         help='Configure Go env to use local cache and skip sum verification '
              '(runs go env -w, deletes go.sum, clears sumdb cache)'
     )
+    parser.add_argument(
+        '--diagnose',
+        action='store_true',
+        help='Inspect go.mod, go.sum, cache, and Go env for consistency issues'
+    )
+    parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Enable verbose/debug output'
+    )
     args = parser.parse_args()
+
+    if args.verbose:
+        set_verbose(True)
 
     if args.version:
         print(f"gitpull-go {__version__}")
@@ -60,6 +77,10 @@ def main():
 
     if args.cache_dir:
         print(get_cache_download_dir())
+        return
+
+    if args.diagnose:
+        diagnose()
         return
 
     if args.setup:
